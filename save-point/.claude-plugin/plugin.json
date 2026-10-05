@@ -1,6 +1,6 @@
 {
   "name": "save-point",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Context, cost and cache at a glance: a band above the prompt, a /hud pane with retro game themes, and Autopilot context notices",
   "author": {
     "name": "Robert Frey"
@@ -20,8 +20,8 @@
     },
     "priceMultiplier": {
       "type": "number",
-      "title": "Price multiplier",
-      "description": "Applied to every list price (negotiated discounts or uplifts)",
+      "title": "Price multiplier (default 1)",
+      "description": "Applied to every list price (negotiated discounts or uplifts). Leave blank for the default (1)",
       "default": 1
     },
     "usOnlyInference": {
@@ -32,32 +32,32 @@
     },
     "contextWarnPercent": {
       "type": "number",
-      "title": "Context warn %",
-      "description": "Context turns from green to yellow (start thinking about wrapping up)",
+      "title": "Context warn % (default 30)",
+      "description": "Context turns from green to yellow (start thinking about wrapping up). Leave blank for the default (30)",
       "default": 30
     },
     "contextOrangePercent": {
       "type": "number",
-      "title": "Context orange %",
-      "description": "Context turns orange (pick your stopping point)",
+      "title": "Context orange % (default 40)",
+      "description": "Context turns orange (pick your stopping point). Leave blank for the default (40)",
       "default": 40
     },
     "contextAlertPercent": {
       "type": "number",
-      "title": "Context alert %",
-      "description": "Context turns red (should already be wrapping up)",
+      "title": "Context alert % (default 50)",
+      "description": "Context turns red (should already be wrapping up). Leave blank for the default (50)",
       "default": 50
     },
     "contextCriticalPercent": {
       "type": "number",
-      "title": "Context critical %",
-      "description": "Context turns inverse red (well past the point to save and start fresh)",
+      "title": "Context critical % (default 75)",
+      "description": "Context turns inverse red (well past the point to save and start fresh). Leave blank for the default (75)",
       "default": 75
     },
     "bandSegments": {
       "type": "string",
-      "title": "Band segments",
-      "description": "Comma list of segments to show, most important first; the last ones drop when narrow. Any of: ctx,next,session,model,last,limits,tools",
+      "title": "Band segments (blank = default)",
+      "description": "Comma list of segments to show, most important first; the last ones drop when narrow. Any of: ctx,next,session,model,last,limits,tools. Leave blank for the default",
       "default": "ctx,next,model,session,last,limits,tools"
     },
     "showRateLimits": {
@@ -80,8 +80,8 @@
     },
     "spendLimitUsd": {
       "type": "number",
-      "title": "Spend limit (USD)",
-      "description": "Per-user spend cap; shown in dollars beside a reported spend_limit. 0 = none",
+      "title": "Spend limit, USD (default 0 = none)",
+      "description": "Per-user spend cap; shown in dollars beside a reported spend_limit. 0 = none. Leave blank for the default (0)",
       "default": 0
     },
     "autopilot": {
@@ -108,8 +108,8 @@
     },
     "backstopPercent": {
       "type": "number",
-      "title": "Backstop %",
-      "description": "Threshold for the spawn backstop and compaction guard",
+      "title": "Backstop % (default 60)",
+      "description": "Threshold for the spawn backstop and compaction guard. Leave blank for the default (60)",
       "default": 60
     },
     "compactionGuard": {
@@ -161,8 +161,8 @@
     },
     "themeFps": {
       "type": "number",
-      "title": "Theme frames per second",
-      "description": "Scene animation speed, 2 to 8",
+      "title": "Theme frames per second (default 6)",
+      "description": "Scene animation speed, 2 to 8. Leave blank for the default (6)",
       "default": 6
     },
     "overkillHint": {
@@ -173,8 +173,8 @@
     },
     "sceneMinColumns": {
       "type": "number",
-      "title": "Scene min columns",
-      "description": "Below this pane width the scene hides and only meters show",
+      "title": "Scene min columns (default 40)",
+      "description": "Below this pane width the scene hides and only meters show. Leave blank for the default (40)",
       "default": 40
     }
   }

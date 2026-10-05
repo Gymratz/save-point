@@ -340,6 +340,9 @@ export function cacheInfo(o: { lastReqAt: number | null; ttl: Ttl; now: number; 
 /** Band segment ids, in display order. */
 export const BAND_ORDER = ['model', 'ctx', 'session', 'last', 'next', 'limits', 'tools'] as const
 
+/** The `bandSegments` option when it is left blank: most important first. */
+export const BAND_PRIORITY = 'ctx,next,model,session,last,limits,tools'
+
 /** The countdown turns amber inside this window. */
 export const WARN_MS = 3 * 60_000
 
@@ -442,7 +445,7 @@ export function bandSegments(b: BandInput): Segment[] {
   segments.push({ id: 'tools', runs: counts })
 
   const candidates = b.mode === 'compact' ? [{ id: 'ctx', runs: [dim('ctx '), ctxPct] }, ...(compactNext ? [compactNext] : [])] : segments
-  let priority = parseSegments(b.priority, BAND_ORDER)
+  let priority = parseSegments(b.priority.trim() || BAND_PRIORITY, BAND_ORDER)
   if (limitsUrgent && priority.includes('limits')) {
     priority = ['ctx', 'limits', ...priority.filter(id => id !== 'ctx' && id !== 'limits')]
   }
