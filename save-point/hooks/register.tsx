@@ -303,15 +303,14 @@ async function gather($: EngineInterface, options: PluginOptions): Promise<Omit<
 async function autopilotInfo($: EngineInterface, options: PluginOptions): Promise<PaneInput['autopilot']> {
   const a = await read($, autopilot)
   return {
-    on: isOn(a, options),
-    source: a.override === null ? 'config' : 'session',
+    on: isOn(a),
     delivery: options.noticeDelivery === 'tool+turn' ? 'tool+turn' : 'tool',
     nextAt: a.highWater >= 90 ? null : a.highWater + 10,
     last: a.last,
     at: backstopPercent(options),
-    backstop: await partOn($, 'backstop', options),
-    guard: await partOn($, 'guard', options),
-    hints: await partOn($, 'hints', options),
+    backstop: await partOn($, 'backstop'),
+    guard: await partOn($, 'guard'),
+    hints: await partOn($, 'hints'),
     hint: await currentHint($, options),
     check: a.check,
   }
@@ -365,16 +364,15 @@ function pricesText(options: PluginOptions, model: string | null): string {
 
 const STATS_KEEP = 40
 
-function isOn(a: Autopilot, options: PluginOptions): boolean {
-  return a.override ?? options.autopilot === true
+function isOn(a: Autopilot): boolean {
+  return a.override === true
 }
 
-/** The parts of Autopilot with their own switch: the pane's choice, else the option. */
-const PART_OPTION = { backstop: 'spawnBackstop', guard: 'compactionGuard', hints: 'effortHints' } as const
-type Part = keyof typeof PART_OPTION
+/** The parts of Autopilot with their own switch in the pane; each is off until switched on there. */
+type Part = 'backstop' | 'guard' | 'hints'
 
-async function partOn($: EngineInterface, part: Part, options: PluginOptions): Promise<boolean> {
-  return (await read($, view))[part] ?? options[PART_OPTION[part]] === true
+async function partOn($: EngineInterface, part: Part): Promise<boolean> {
+  return (await read($, view))[part] === true
 }
 
 async function setPart($: EngineInterface, part: Part, enabled: boolean) {
@@ -408,7 +406,7 @@ async function autopilotCommand($: EngineInterface, sub: string, options: Plugin
   } else if (sub) {
     return { text: 'Usage: /hud autopilot [on | off]' }
   }
-  const enabled = isOn(await read($, autopilot), options)
+  const enabled = isOn(await read($, autopilot))
   $.ui.toast(`Autopilot ${enabled ? 'on' : 'off'}${sub ? ', remembered for new sessions' : ''}`)
   return {}
 }
@@ -428,7 +426,7 @@ async function setAutopilot($: EngineInterface, enabled: boolean) {
 /** `/hud effort-check`: one Haiku classification over the stats summary. */
 async function effortCheckCommand($: EngineInterface, options: PluginOptions) {
   const a = await read($, autopilot)
-  if (!isOn(a, options) || options.effortCheck !== true) {
+  if (!isOn(a) || options.effortCheck !== true) {
     $.ui.toast('Effort check needs Autopilot on and the effortCheck option set')
     return {}
   }
@@ -452,9 +450,9 @@ async function effortCheckCommand($: EngineInterface, options: PluginOptions) {
 
 /** The pane's Autopilot hint line, when hints are on. */
 async function currentHint($: EngineInterface, options: PluginOptions): Promise<string | null> {
-  if (!(await partOn($, 'hints', options))) return null
+  if (!(await partOn($, 'hints'))) return null
   const a = await read($, autopilot)
-  if (!isOn(a, options)) return null
+  if (!isOn(a)) return null
   return effortHint(await read($, effort), effortStats(a.steps, a.calls))
 }
 
@@ -468,7 +466,7 @@ async function apSessionStart($: EngineInterface, options: PluginOptions) {
     await update($, autopilot, x => ({ ...x, override: remembered }))
   }
   const a = await read($, autopilot)
-  if (isOn(a, options) && a.highWater === 0 && a.last === null) await seed($)
+  if (isOn(a) && a.highWater === 0 && a.last === null) await seed($)
 }
 
 async function apSessionEnd($: EngineInterface, reason: string) {
@@ -479,7 +477,7 @@ async function apSessionEnd($: EngineInterface, reason: string) {
 async function apStep($: EngineInterface, options: PluginOptions, ms: number, out: number) {
   await update($, autopilot, a => ({ ...a, steps: [...a.steps, { ms, out }].slice(-STATS_KEEP) }))
   const a = await read($, autopilot)
-  if (!isOn(a, options)) return
+  if (!isOn(a)) return
   const u = (await $.session.usage()).context
   if (u.percent === undefined || u.tokens === undefined) return
   const t = crossing(u.percent, a.highWater)
@@ -511,7 +509,7 @@ async function apToolResult<R extends ToolCallResult>(
 /** The pending notice, marked delivered, when Autopilot is on and one waits; else null. */
 async function takeNotice($: EngineInterface, options: PluginOptions): Promise<string | null> {
   const a = await read($, autopilot)
-  if (!isOn(a, options) || !a.pending) return null
+  if (!isOn(a) || !a.pending) return null
   const notice = a.pending
   await update($, autopilot, x => ({ ...x, pending: null, last: x.last && { ...x.last, delivered: true } }))
   return notice
@@ -524,8 +522,8 @@ function registerAutopilot(on: On, options: PluginOptions) {
 
   // Spawn backstop: deny new Agent calls above the backstop percent.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
-    if (e.agentId || !(await partOn($, 'backstop', options))) return next(e)
-    if (!isOn(await read($, autopilot), options)) return next(e)
+    if (e.agentId || !(await partOn($, 'backstop'))) return next(e)
+    if (!isOn(await read($, autopilot))) return next(e)
     const pct = await percentNow($)
     if (pct !== null && pct >= backstopAt) return { deny: backstopText(pct, backstopAt) }
     return next(e)
@@ -544,7 +542,7 @@ function registerAutopilot(on: On, options: PluginOptions) {
   on('session.compact', async ($, e, next) => {
     if (e.agentId) return next(e)
     const a = await read($, autopilot)
-    if (isOn(a, options) && e.trigger === 'auto' && (await partOn($, 'guard', options))) {
+    if (isOn(a) && e.trigger === 'auto' && (await partOn($, 'guard'))) {
       const pct = await percentNow($)
       if (pct !== null && pct >= backstopAt) return { skip: guardText(pct, backstopAt) }
     }
@@ -609,12 +607,12 @@ function sceneEvent(name: EventName, vars: Record<string, string> = {}) {
   if (sceneQueue.length > 20) sceneQueue.shift()
 }
 
-function themeOf(v: View, options: PluginOptions): string {
-  return themeId(v.theme ?? String(options.theme ?? 'default')) ?? 'default'
+function themeOf(v: View): string {
+  return themeId(v.theme ?? 'default') ?? 'default'
 }
 
 async function activeTheme($: EngineInterface, options: PluginOptions): Promise<Theme> {
-  const id = themeOf(await read($, view), options)
+  const id = themeOf(await read($, view))
   const { theme, missing } = resolveTheme(id)
   if (missing.length && !loggedMissing.has(id)) {
     loggedMissing.add(id)
@@ -774,7 +772,7 @@ async function animate($: EngineInterface, options: PluginOptions) {
 /** Scene events from the session's own data: identity changes and context milestones. */
 async function sceneAfterStep($: EngineInterface, options: PluginOptions, model: string, effortLevel: string | null) {
   const identity = { hero: heroTier(model), weapon: weaponTier(effortLevel) }
-  const spec = THEMES[themeOf(await read($, view), options)]?.scene
+  const spec = THEMES[themeOf(await read($, view))]?.scene
   if (lastIdentity) {
     if (identity.hero !== lastIdentity.hero) sceneEvent('modelChange', { name: spec ? spec.heroNames[identity.hero] : prettyModel(model) })
     if (identity.weapon !== lastIdentity.weapon) sceneEvent('effortChange', { weapon: spec ? spec.weapons[identity.weapon].name : String(effortLevel) })
@@ -1285,7 +1283,7 @@ export const register: Register = (on, options) => {
       mode,
       snap,
       effort: await read($, effort),
-      autopilot: isOn(await read($, autopilot), options),
+      autopilot: isOn(await read($, autopilot)),
       tools: act.tools,
       spawns: act.spawns,
       lastUsd: (await read($, turn)).lastUsd,

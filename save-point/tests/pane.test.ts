@@ -36,7 +36,7 @@ function input(over: Partial<PaneInput> = {}): PaneInput {
     spendLimit: 0,
     width: 60,
     cwd: 'C:\\work\\x',
-    autopilot: { on: false, source: 'config', delivery: 'tool', nextAt: 10, last: null, at: 60, backstop: false, guard: false, hints: false, hint: null, check: null },
+    autopilot: { on: false, delivery: 'tool', nextAt: 10, last: null, at: 60, backstop: false, guard: false, hints: false, hint: null, check: null },
     ...over,
   }
   return { ...i, cache: over.cache ?? cacheInfo({ lastReqAt: i.clock.lastReqAt, ttl: i.ttl, now: i.now, price: i.price, tokens: i.snap.tokens }) }
@@ -109,7 +109,6 @@ describe('pane', () => {
         input({
           autopilot: {
             on: true,
-            source: 'session',
             delivery: 'tool',
             nextAt: 40,
             last: { text: '[save-point] Informational: context passed 30% (now 32%, 320k/1M). Act on this only if your instructions say to.', delivered: true, threshold: 30, percent: 32 },

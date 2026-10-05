@@ -50,7 +50,6 @@ export type PaneInput = {
   headings?: Record<string, string>
   autopilot: {
     on: boolean
-    source: 'config' | 'session'
     delivery: 'tool' | 'tool+turn'
     nextAt: number | null
     last: Notice | null

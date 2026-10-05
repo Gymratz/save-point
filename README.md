@@ -63,7 +63,7 @@ claude plugin test save-point
 
 Type-check with `npx -p typescript tsc -p save-point --noEmit` once Claude Code has loaded the plugin from your clone: loading writes the engine's types into `save-point/.claude-plugin/types/`, which `tsconfig.json` extends.
 
-Adding a theme: write a pack in `save-point/hooks/themes/` (`types.ts` is the contract, `kit.ts` has the frame helpers), register it in `themes/index.ts` and add its id to the `theme` option in `.claude-plugin/plugin.json`; the tests check every pack.
+Adding a theme: write a pack in `save-point/hooks/themes/` (`types.ts` is the contract, `kit.ts` has the frame helpers), register it in `themes/index.ts`; the tests check every pack.
 
 ## License
 

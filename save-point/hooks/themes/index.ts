@@ -1,6 +1,6 @@
 // The theme registry. To add a theme: write a pack like metroid.ts (a `Theme`
-// object; kit.ts has the frame helpers), import it here, add it to THEMES and
-// to the `theme` option's list in plugin.json (a test checks). Nothing else changes.
+// object; kit.ts has the frame helpers), import it here and add it to THEMES.
+// Nothing else changes.
 
 import { LIMIT_LEVELS } from '../lib'
 import { ACTIVITY_STATES, EVENT_NAMES, TEXT_COLORS } from './types'

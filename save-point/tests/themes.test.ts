@@ -59,16 +59,18 @@ describe('registry', () => {
     expect(resolveTheme('pale').missing).toEqual(['palette.light.gold'])
     delete THEMES.pale
   })
-  // The manifest's `theme` option declares its choices; a value outside them loads as the default.
   for (const id of Object.keys(THEMES)) {
-    test(`the theme option takes ${id}`, { options: { theme: id } }, async ($, on) => {
+    test(`/hud theme ${id} makes it the active theme`, async ($, on) => {
       const toasts: string[] = []
       on('session.surfaces', () => ({ value: [] }))
+      on('store.set', () => ({ value: undefined }))
       on('ui.toast', (_$, e) => {
         toasts.push(e.text)
         return { value: undefined }
       })
-      await $.command.run({ command: 'hud', args: 'theme', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+      const run = (args: string) => $.command.run({ command: 'hud', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+      await run(`theme ${id}`)
+      await run('theme')
       expect(toasts.join(' | ')).toContain(`${id} (active)`)
     })
   }

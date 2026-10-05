@@ -56,7 +56,7 @@ export type BandMode = 'full' | 'compact' | 'hidden'
 /**
  * What is shown and switched on, remembered across sessions in $.store: the
  * band mode, the pane, the pane's theme and tab, and the Autopilot choices
- * made in the pane or by `/hud autopilot` (absent: the plugin option).
+ * made in the pane or by `/hud autopilot` (absent: off).
  * Tracking never depends on it.
  */
 export type View = {
@@ -82,7 +82,7 @@ export type CallStat = { key: string; isError: boolean }
 export type Notice = { text: string; delivered: boolean; threshold: number; percent: number }
 
 export type Autopilot = {
-  /** This session's switch from `/hud autopilot`; null follows the `autopilot` option. */
+  /** Autopilot's switch, from the pane or `/hud autopilot`; null until chosen (off). */
   override: boolean | null
   /** Highest threshold notified this conversation (0 = none). */
   highWater: number

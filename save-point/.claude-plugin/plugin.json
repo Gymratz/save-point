@@ -1,6 +1,6 @@
 {
   "name": "save-point",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Context, cost and cache at a glance: a band above the prompt, a /hud pane with retro game themes, and Autopilot context notices",
   "author": {
     "name": "Robert Frey"
@@ -84,69 +84,27 @@
       "description": "Per-user spend cap; shown in dollars beside a reported spend_limit. 0 = none. Leave blank for the default (0)",
       "default": 0
     },
-    "autopilot": {
-      "type": "boolean",
-      "title": "Autopilot",
-      "description": "Master switch for Autopilot (context notices to the model, backstop, guard, effort hints). Once switched in the pane or with /hud autopilot on|off, that choice is remembered and used instead",
-      "default": false
-    },
     "noticeDelivery": {
       "type": "string",
       "title": "Notice delivery",
-      "description": "tool: append to the next tool result; tool+turn: also with the next turn's start, whichever comes first",
+      "description": "How Autopilot delivers context notices. tool: append to the next tool result; tool+turn: also with the next turn's start, whichever comes first",
       "options": [
         "tool",
         "tool+turn"
       ],
       "default": "tool"
     },
-    "spawnBackstop": {
-      "type": "boolean",
-      "title": "Spawn backstop",
-      "description": "Deny new Agent calls above the backstop percent (Autopilot). A choice made in the pane is used instead",
-      "default": false
-    },
     "backstopPercent": {
       "type": "number",
       "title": "Backstop % (default 60)",
-      "description": "Threshold for the spawn backstop and compaction guard. Leave blank for the default (60)",
+      "description": "Context percent for Autopilot's spawn backstop and compaction guard (both switched on in the /hud pane). Leave blank for the default (60)",
       "default": 60
-    },
-    "compactionGuard": {
-      "type": "boolean",
-      "title": "Compaction guard",
-      "description": "Turn automatic compaction off above the backstop percent, so nothing compacts unless you run /compact (Autopilot). A choice made in the pane is used instead",
-      "default": false
-    },
-    "effortHints": {
-      "type": "boolean",
-      "title": "Effort hints",
-      "description": "Heuristic effort hints in the pane; never sent to the model (Autopilot). A choice made in the pane is used instead",
-      "default": false
     },
     "effortCheck": {
       "type": "boolean",
       "title": "Effort check",
-      "description": "Allow /hud effort-check, one small Haiku call on demand (Autopilot)",
+      "description": "Allow /hud effort-check, one small Haiku call on demand, while Autopilot is on",
       "default": false
-    },
-    "theme": {
-      "type": "string",
-      "title": "Pane theme",
-      "description": "Look of the /hud pane: default (plain), zelda (The Legend of Context), metroid (Context Prime), mario (Super Context Bros.), deepsea (Twenty Thousand Tokens Under the Sea), minecraft (Tokencraft), megaman (Mega Context), castlevania (Symphony of the Tokens), doom (Knee-Deep in the Context) or fantasy (Final Context). /hud theme <name> switches and remembers",
-      "options": [
-        "default",
-        "zelda",
-        "metroid",
-        "mario",
-        "deepsea",
-        "minecraft",
-        "megaman",
-        "castlevania",
-        "doom",
-        "fantasy"
-      ],
-      "default": "default"
     },
     "themePalette": {
       "type": "string",
