@@ -1,0 +1,181 @@
+{
+  "name": "save-point",
+  "version": "1.0.0",
+  "description": "Context, cost and cache at a glance: a band above the prompt, a /hud pane with retro game themes, and Autopilot context notices",
+  "author": {
+    "name": "Robert Frey"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "cacheTtl": {
+      "type": "string",
+      "title": "Cache TTL",
+      "description": "Prompt cache lifetime for the main conversation: auto (detect from billed cost), 5m or 1h",
+      "options": [
+        "auto",
+        "5m",
+        "1h"
+      ],
+      "default": "auto"
+    },
+    "priceMultiplier": {
+      "type": "number",
+      "title": "Price multiplier",
+      "description": "Applied to every list price (negotiated discounts or uplifts)",
+      "default": 1
+    },
+    "usOnlyInference": {
+      "type": "boolean",
+      "title": "US-only inference",
+      "description": "Apply the 1.1x data-residency multiplier to prices",
+      "default": false
+    },
+    "contextWarnPercent": {
+      "type": "number",
+      "title": "Context warn %",
+      "description": "Context turns from green to yellow (start thinking about wrapping up)",
+      "default": 30
+    },
+    "contextOrangePercent": {
+      "type": "number",
+      "title": "Context orange %",
+      "description": "Context turns orange (pick your stopping point)",
+      "default": 40
+    },
+    "contextAlertPercent": {
+      "type": "number",
+      "title": "Context alert %",
+      "description": "Context turns red (should already be wrapping up)",
+      "default": 50
+    },
+    "contextCriticalPercent": {
+      "type": "number",
+      "title": "Context critical %",
+      "description": "Context turns inverse red (well past the point to save and start fresh)",
+      "default": 75
+    },
+    "bandSegments": {
+      "type": "string",
+      "title": "Band segments",
+      "description": "Comma list of segments to show, most important first; the last ones drop when narrow. Any of: ctx,next,session,model,last,limits,tools",
+      "default": "ctx,next,model,session,last,limits,tools"
+    },
+    "showRateLimits": {
+      "type": "boolean",
+      "title": "Show rate limits",
+      "description": "Show plan rate limits when the session reports them",
+      "default": true
+    },
+    "showBash": {
+      "type": "boolean",
+      "title": "Show shell count",
+      "description": "Show the shell (Bash/PowerShell) counter",
+      "default": true
+    },
+    "showSubagents": {
+      "type": "boolean",
+      "title": "Show subagent count",
+      "description": "Show the agents (subagents spawned) counter",
+      "default": true
+    },
+    "spendLimitUsd": {
+      "type": "number",
+      "title": "Spend limit (USD)",
+      "description": "Per-user spend cap; shown in dollars beside a reported spend_limit. 0 = none",
+      "default": 0
+    },
+    "autopilot": {
+      "type": "boolean",
+      "title": "Autopilot",
+      "description": "Master switch for Autopilot (context notices to the model, backstop, guard, effort hints). Once switched in the pane or with /hud autopilot on|off, that choice is remembered and used instead",
+      "default": false
+    },
+    "noticeDelivery": {
+      "type": "string",
+      "title": "Notice delivery",
+      "description": "tool: append to the next tool result; tool+turn: also with the next turn's start, whichever comes first",
+      "options": [
+        "tool",
+        "tool+turn"
+      ],
+      "default": "tool"
+    },
+    "spawnBackstop": {
+      "type": "boolean",
+      "title": "Spawn backstop",
+      "description": "Deny new Agent calls above the backstop percent (Autopilot). A choice made in the pane is used instead",
+      "default": false
+    },
+    "backstopPercent": {
+      "type": "number",
+      "title": "Backstop %",
+      "description": "Threshold for the spawn backstop and compaction guard",
+      "default": 60
+    },
+    "compactionGuard": {
+      "type": "boolean",
+      "title": "Compaction guard",
+      "description": "Turn automatic compaction off above the backstop percent, so nothing compacts unless you run /compact (Autopilot). A choice made in the pane is used instead",
+      "default": false
+    },
+    "effortHints": {
+      "type": "boolean",
+      "title": "Effort hints",
+      "description": "Heuristic effort hints in the pane; never sent to the model (Autopilot). A choice made in the pane is used instead",
+      "default": false
+    },
+    "effortCheck": {
+      "type": "boolean",
+      "title": "Effort check",
+      "description": "Allow /hud effort-check, one small Haiku call on demand (Autopilot)",
+      "default": false
+    },
+    "theme": {
+      "type": "string",
+      "title": "Pane theme",
+      "description": "Look of the /hud pane: default (plain), zelda (The Legend of Context), metroid (Context Prime), mario (Super Context Bros.), deepsea (Twenty Thousand Tokens Under the Sea), minecraft (Tokencraft), megaman (Mega Context), castlevania (Symphony of the Tokens), doom (Knee-Deep in the Context) or fantasy (Final Context). /hud theme <name> switches and remembers",
+      "options": [
+        "default",
+        "zelda",
+        "metroid",
+        "mario",
+        "deepsea",
+        "minecraft",
+        "megaman",
+        "castlevania",
+        "doom",
+        "fantasy"
+      ],
+      "default": "default"
+    },
+    "themePalette": {
+      "type": "string",
+      "title": "Theme palette",
+      "description": "Text colors for light or dark terminals; auto follows Claude Code's theme setting",
+      "options": [
+        "auto",
+        "dark",
+        "light"
+      ],
+      "default": "auto"
+    },
+    "themeFps": {
+      "type": "number",
+      "title": "Theme frames per second",
+      "description": "Scene animation speed, 2 to 8",
+      "default": 6
+    },
+    "overkillHint": {
+      "type": "boolean",
+      "title": "Overkill mood",
+      "description": "Show the hero embarrassed when heavy firepower does routine work",
+      "default": true
+    },
+    "sceneMinColumns": {
+      "type": "number",
+      "title": "Scene min columns",
+      "description": "Below this pane width the scene hides and only meters show",
+      "default": 40
+    }
+  }
+}
