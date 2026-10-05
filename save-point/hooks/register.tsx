@@ -105,8 +105,8 @@ let warmUntil = 0
 let tickTimer: Timer | null = null
 let mainSteps: StepUsage[] = []
 let agentSteps: StepUsage[] = []
-/** The session a resume just ended; set until the conversation that took its place is read. */
-let resumedFrom: string | null = null
+/** The session a /clear or resume just ended; set until the conversation that took its place is read. */
+let replacedFrom: string | null = null
 
 async function refresh($: EngineInterface) {
   const u = await $.session.usage()
@@ -146,14 +146,17 @@ async function restoreClock($: EngineInterface, ttl: Ttl) {
 }
 
 /**
- * After a resume inside this process (no `session.start` fires for it): reads
- * the conversation that took over, as a session start would. `force` reads it
- * even under the same session id (a turn is starting, so it is in place).
+ * After a /clear or a resume inside this process (no `session.start` fires for
+ * either): restores the remembered view (theme, Autopilot) into the new
+ * session's state and reads the conversation that took over, as a session
+ * start would. `force` does it even under the same session id (a turn is
+ * starting, so it is in place).
  */
-async function afterResume($: EngineInterface, options: PluginOptions, force = false) {
-  if (resumedFrom === null) return
-  if (!force && (await $.session.id()) === resumedFrom) return
-  resumedFrom = null
+async function afterReplaced($: EngineInterface, options: PluginOptions, force = false) {
+  if (replacedFrom === null) return
+  if (!force && (await $.session.id()) === replacedFrom) return
+  replacedFrom = null
+  await restoreView($)
   await restoreClock($, ttlInUse(options, (await read($, cache)).detected).ttl)
   await backfill($)
   await apSessionStart($, options)
@@ -161,7 +164,7 @@ async function afterResume($: EngineInterface, options: PluginOptions, force = f
 }
 
 async function tick($: EngineInterface, options: PluginOptions) {
-  await afterResume($, options)
+  await afterReplaced($, options)
   const now = await $.clock.now()
   if (warmUntil && now < warmUntil + 1500) $.ui.invalidate('ui.render')
   if (warmUntil && now >= warmUntil && !coldSent) {
@@ -172,7 +175,10 @@ async function tick($: EngineInterface, options: PluginOptions) {
 
 async function setView($: EngineInterface, change: (v: View) => View): Promise<View> {
   const saved = await update($, view, change)
-  await $.store.set(VIEW_KEY, saved)
+  // Merged onto what is stored, so a view that never held a choice (a session
+  // whose state started over) cannot erase the remembered one.
+  const stored = ((await $.store.get(VIEW_KEY)) ?? {}) as Partial<View>
+  await $.store.set(VIEW_KEY, { ...stored, ...saved })
   return saved
 }
 
@@ -898,9 +904,9 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     await apSessionEnd($, e.reason)
     // Neither starts a session again: a /clear leaves an empty conversation,
-    // a resume another one, read once it is in place (`afterResume`).
+    // a resume another one, read once it is in place (`afterReplaced`).
     if (e.reason === 'clear' || e.reason === 'resume') {
-      if (e.reason === 'resume') resumedFrom = e.sessionId
+      replacedFrom = e.sessionId
       sceneMark = -1
       sceneActivity = 'idle'
       warmUntil = 0
@@ -917,7 +923,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    await afterResume($, options, true)
+    await afterReplaced($, options, true)
     sceneActivity = 'thinking'
     mainSteps = []
     agentSteps = []

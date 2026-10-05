@@ -63,6 +63,7 @@ describe('registry', () => {
     test(`/hud theme ${id} makes it the active theme`, async ($, on) => {
       const toasts: string[] = []
       on('session.surfaces', () => ({ value: [] }))
+      on('store.get', () => ({ value: undefined }))
       on('store.set', () => ({ value: undefined }))
       on('ui.toast', (_$, e) => {
         toasts.push(e.text)
@@ -74,6 +75,20 @@ describe('registry', () => {
       expect(toasts.join(' | ')).toContain(`${id} (active)`)
     })
   }
+  // A /clear gives the session fresh state and fires no session.start: the
+  // view as these tests start it (defaults, nothing restored).
+  test('a view change in fresh state keeps the remembered theme', async ($, on) => {
+    const store: Record<string, unknown> = { view: { band: 'full', pane: false, theme: 'zelda' } }
+    on('session.surfaces', () => ({ value: [] }))
+    on('store.get', (_$, e) => ({ value: store[e.key] }))
+    on('store.set', (_$, e) => {
+      store[e.key] = e.value
+      return { value: undefined }
+    })
+    on('ui.toast', () => ({ value: undefined }))
+    await $.command.run({ command: 'hud', args: 'autopilot off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+    expect(store.view).toMatchObject({ autopilot: false, theme: 'zelda' })
+  })
   test('aliases', () => {
     expect(themeId('Quest')).toBe('zelda')
     expect(themeId('nope')).toBe(null)
