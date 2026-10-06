@@ -49,6 +49,7 @@ Pick one from the Theme dropdown in the pane (or `/hud theme <name>`).  Each dra
 | Symphony of the Tokens | `castlevania` | PLAYER bar, deeper into the castle | hearts | candle |
 | Knee-Deep in the Context | `doom` | HEALTH % and the face, episode by episode | ammo spent | armor |
 | Final Context | `fantasy` | HP | Gil | MP |
+| Close Encounters of the Probed Kind | `alien` | the herd not yet probed, with dawn on its way | sample jars | the cow's sedative |
 
 The About tab shows every theme's heroes and weapons; "Play every scene on Quest" runs through all its animations.  Milestone banners follow your context thresholds (`contextWarnPercent` and the rest).
 

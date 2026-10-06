@@ -150,14 +150,19 @@ const BAR_CASES: BarState[] = [
   { tick: 0, percent: 0, spend: 0, hero: 'unknown', weapon: 'xhigh', cacheSeconds: null, cacheFrac: null, nextWarmUsd: null, limitMax: null },
 ]
 
-/** Every frame of every animation and take of a theme, for one hero: the scene state at the frame's first tick. */
-function everyFrame(theme: Theme, hero: SceneState['hero'], weapon: SceneState['weapon'], each: (s: SceneState, where: string) => void) {
+/**
+ * Every frame of every animation and take of a theme, for one hero: the scene state at the frame's first tick, and
+ * the theme to draw it with (a loop with takes picks its own as it goes round, so each take is drawn as the whole loop).
+ */
+function everyFrame(theme: Theme, hero: SceneState['hero'], weapon: SceneState['weapon'], each: (s: SceneState, where: string, shown: Theme) => void) {
   for (const { key, anim, state, event } of animationsOf(theme)) {
     takes(anim).forEach((frames, variant) => {
+      const [group, name] = key.split('.') as ['states' | 'overkill' | 'cold', string]
+      const shown: Theme = event ? theme : { ...theme, [group]: { ...theme[group], [name]: { frames, loop: true } } }
       let t = 0
       frames.forEach((f, k) => {
         const playing = event ? { name: event, startTick: 0, vars: { pct: '50', level: 'alert', name: 'X', weapon: 'Y' }, variant } : null
-        each({ ...base, ...state, hero, weapon, tick: t, since: 0, event: playing }, `${key}#${variant} f${k} ${hero}`)
+        each({ ...base, ...state, hero, weapon, tick: t, since: 0, event: playing }, `${key}#${variant} f${k} ${hero}`, shown)
         t += Math.max(1, f.hold ?? 1)
       })
     })
@@ -210,7 +215,7 @@ for (const theme of PACKS) {
       const rows = Math.ceil(spec.height / 2)
       for (const hero of HERO_TIERS) {
         for (const weapon of WEAPON_TIERS) {
-          everyFrame(theme, hero, weapon, s => expect(renderScene(theme, s, 64)?.rows).toBe(rows))
+          everyFrame(theme, hero, weapon, (s, _where, shown) => expect(renderScene(shown, s, 64)?.rows).toBe(rows))
           expect(renderBar(theme, { tick: 0, percent: 40, spend: 260, hero, weapon, cacheSeconds: 100, cacheFrac: 0.5, nextWarmUsd: 0.03, limitMax: 50 }, 72)?.columns ?? 72).toBe(72)
         }
       }
@@ -250,8 +255,8 @@ for (const theme of PACKS) {
       for (const rows of [undefined, sceneMaxRows(theme)]) {
         for (const columns of PANE_WIDTHS) {
           for (const hero of HERO_TIERS) {
-            everyFrame(theme, hero, hero === 'tier4' ? 'max' : 'high', (s, where) => {
-              for (const c of sceneClips(theme, s, columns, rows)) found.push(`${where}@${columns}x${rows ?? 'design'} ${c.what} ${JSON.stringify(c)}`)
+            everyFrame(theme, hero, hero === 'tier4' ? 'max' : 'high', (s, where, shown) => {
+              for (const c of sceneClips(shown, s, columns, rows)) found.push(`${where}@${columns}x${rows ?? 'design'} ${c.what} ${JSON.stringify(c)}`)
             })
           }
         }

@@ -14,6 +14,7 @@ import { megaman } from './megaman'
 import { castlevania } from './castlevania'
 import { doom } from './doom'
 import { fantasy } from './fantasy'
+import { alien } from './alien'
 
 const still: Animation = { frames: [{ actors: [] }], loop: true }
 const once: Animation = { frames: [{ actors: [] }], loop: false }
@@ -71,6 +72,7 @@ export const THEMES: Record<string, Theme> = {
   castlevania,
   doom,
   fantasy,
+  alien,
 }
 
 /** Names that pick a theme besides its id. */
@@ -100,6 +102,12 @@ const ALIASES: Record<string, string> = {
   final: 'fantasy',
   ff: 'fantasy',
   jrpg: 'fantasy',
+  aliens: 'alien',
+  probe: 'alien',
+  probed: 'alien',
+  ufo: 'alien',
+  abduction: 'alien',
+  encounters: 'alien',
 }
 
 export function themeId(name: string): string | null {
