@@ -29,9 +29,15 @@ export const EVENT_NAMES: readonly EventName[] = [
   'effortChange',
 ]
 
-/** Hero poses. `lie` (lying down asleep) is optional: without it the hero dozes standing (`sleep`). */
-export type HeroPose = 'stand' | 'walk' | 'attack' | 'itemGet' | 'sleep' | 'lie'
-export type HeroPoses = Record<Exclude<HeroPose, 'lie'>, string> & { lie?: string }
+/**
+ * Hero poses. `lie` (lying down asleep) is optional: without it the hero dozes
+ * standing (`sleep`). A pack may add poses of its own (`side`, `thrust`...):
+ * frames name them like the others (`@side`), and a hero or form that lacks one
+ * stands.
+ */
+export type BasePose = 'stand' | 'walk' | 'attack' | 'itemGet' | 'sleep'
+export type HeroPose = BasePose | 'lie' | (string & {})
+export type HeroPoses = Record<BasePose, string> & { lie?: string; [pose: string]: string | undefined }
 
 export type HeroTier = 'tier1' | 'tier2' | 'tier3' | 'tier4' | 'unknown'
 export type WeaponTier = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -72,10 +78,27 @@ export type Actor = {
   tiers?: HeroTier[]
   /** Scenery placed in the scene, not over the hero: a taller form does not lift it. */
   fixed?: boolean
+  /** Draw turned a quarter (a sword stored upright, held level): `cw` points its top to the right. */
+  turn?: 'cw' | 'ccw'
+  /** For `@weapon`: one of the weapon's other sprites by name (`weapons.<tier>.poses`), with the same swap and aura. */
+  pose?: string
+  /** May cross the scene's edge (a fairy flying off, a shot leaving): the bounds check skips it. */
+  offstage?: boolean
+  /**
+   * A full-scene layer behind everything (a night sky, darkness): drawn before
+   * the cache ring, which stays on top of it; the bounds check skips it.
+   */
+  backdrop?: boolean
+  /** Draw only while context used is in [minPercent, maxPercent) (100 included): a sky above ground, plain dark below. */
+  minPercent?: number
+  maxPercent?: number
 }
 
-/** Text drawn into the scene at a cell position relative to the anchor. */
-export type SceneText = { text: string; x: number; y: number; color: string; bg?: string }
+/**
+ * Text drawn into the scene at a cell position relative to the anchor. `lift`:
+ * text over the hero's head rises with a taller form, as a prop does.
+ */
+export type SceneText = { text: string; x: number; y: number; color: string; bg?: string; lift?: boolean }
 
 export type Frame = {
   actors: Actor[]
@@ -88,7 +111,12 @@ export type Frame = {
   message?: string
 }
 
-export type Animation = { frames: Frame[]; loop: boolean }
+/**
+ * `variants`: other takes of the same state or moment (the enemy to the right,
+ * below, diagonal). One take is picked each time it starts, and for a loop each
+ * time it comes round; never the same take twice running.
+ */
+export type Animation = { frames: Frame[]; loop: boolean; variants?: Frame[][] }
 
 /** The names of the meter rows under the scene, and of the About tab's lists. */
 export type MeterLabels = {
@@ -106,7 +134,12 @@ export type MeterLabels = {
 
 /** The scene layout: a pixel status bar, a scene, and themed meters. */
 export type SceneSpec = {
-  /** Pixel height of the scene (two pixels per terminal row). */
+  /**
+   * Pixel height the scene is designed for (two pixels per terminal row). A
+   * taller pane adds headroom at the top, up to half as much again: the floor,
+   * the anchor and ground scenery move down; the border, `sky` scenery, the
+   * cache ring and the message box stay at the top.
+   */
   height: number
   /** Where the hero stands, in pixels from the scene's left and top. */
   anchor: { x: number; y: number }
@@ -121,7 +154,7 @@ export type SceneSpec = {
   /** Pixel color swaps per hero tier (the outfit's colors for each model). */
   heroTiers: Record<HeroTier, Record<string, string>>
   /** The weapon sprite and its palette swaps per effort tier. */
-  weapons: Record<WeaponTier, { sprite: string; swap: Record<string, string>; aura?: string; name: string }>
+  weapons: Record<WeaponTier, WeaponSpec>
   /** The hero's display names per tier. */
   heroNames: Record<HeroTier, string>
   /**
@@ -135,7 +168,7 @@ export type SceneSpec = {
    * sits against the standard hero's top-left (`dx`, `dy`), and how far props
    * above the hero (a weapon held aloft, a potion) move up to clear it (`lift`).
    */
-  heroForms?: Partial<Record<HeroTier, { poses: HeroPoses; dx: number; dy: number; lift: number; hand?: { x: number; y: number } }>>
+  heroForms?: Partial<Record<HeroTier, HeroForm>>
   /** The status bar above the scene: widgets drawn left to right. */
   bar?: {
     widgets: BarWidget[]
@@ -154,6 +187,20 @@ export type SceneSpec = {
 }
 
 /**
+ * A weapon: its sprite, the palette swap for its tier, an `aura` drawn behind
+ * it on alternate ticks, and `poses`: other sprites of the same weapon (a
+ * diagonal sword) that an actor asks for with `pose`, each with its own aura.
+ */
+export type WeaponSpec = { sprite: string; swap: Record<string, string>; aura?: string; name: string; poses?: Record<string, { sprite: string; aura?: string }> }
+
+/**
+ * A larger hero. `hand`: where a held weapon (actor `y >= 0`) moves to;
+ * `aloft`: the same for a weapon held over the head (actor `y < 0`), on top of
+ * `lift`. Both mirror when the weapon is flipped.
+ */
+export type HeroForm = { poses: HeroPoses; dx: number; dy: number; lift: number; hand?: { x: number; y: number }; aloft?: { x: number; y: number } }
+
+/**
  * The scene's backdrop, drawn in this order: fill (`ground`, or a `gradient`
  * top to bottom that blends toward `deep` as context fills), `particles`, the
  * `border` tile along the top, the `floor` tile along the bottom, `decor`.
@@ -170,18 +217,27 @@ export type Background = {
   floor?: string
   /**
    * Fixed scenery: `x` from the left, or from the right when negative; `y` from
-   * the top; shown while context used is in [minPercent, maxPercent] and the
-   * scene is at least `minColumns` wide (scenery that would crowd the action).
+   * the top of the scene as designed. Ground scenery moves down with the floor
+   * in a taller scene; `sky` scenery (clouds, a moon, a ceiling) stays at the
+   * top. Shown while context used is in [minPercent, maxPercent) (100 included)
+   * and the scene is at least `minColumns` wide (scenery that would crowd the action).
+   * `ring`: the cache ring's own housing (a gauge, a plaque): it goes with the
+   * ring while a message box takes that corner. `lit`: it gives its own light
+   * (a crystal, a lamp), so `shade` does not darken it.
    */
-  decor?: { sprite: string; x: number; y: number; minPercent?: number; maxPercent?: number; minColumns?: number }[]
+  decor?: { sprite: string; x: number; y: number; sky?: boolean; ring?: boolean; lit?: boolean; minPercent?: number; maxPercent?: number; minColumns?: number }[]
   /** Darkens `border`, `floor` and `decor` toward `color` as context fills, up to `amount` (0..1) at 100%. */
   shade?: { color: string; amount: number }
-  /** Drifting points: bubbles, snow, glowing plankton, stars. Shown while context used is in [minPercent, maxPercent]. */
+  /** Drifting points: bubbles, snow, glowing plankton, stars. Shown while context used is in [minPercent, maxPercent) (100 included). */
   particles?: { colors: string[]; count: number; drift: 'up' | 'down' | 'left' | 'none'; speed?: number; minPercent?: number; maxPercent?: number }[]
 }
 
-/** What a meter fills by: context left, cache left, effort, or headroom under the highest rate limit. */
-export type MeterValue = 'contextLeft' | 'cache' | 'effort' | 'limitsLeft'
+/**
+ * What a meter fills by: context left, cache left, effort, headroom under the
+ * highest rate limit (`limitsLeft`), or that limit itself (`limitsUsed`: fills
+ * as the limit is used, empty while none is reported).
+ */
+export type MeterValue = 'contextLeft' | 'cache' | 'effort' | 'limitsLeft' | 'limitsUsed'
 
 /** What a bar widget shows. Counters print it; meters fill by it. */
 export type BarValue =
@@ -196,29 +252,38 @@ export type BarValue =
   | 'cache' // fraction of the cache TTL left (meters)
 
 /**
- * One part of the status bar. `drop`: when the bar is too narrow, the widget
- * with the highest `drop` goes first (absent: never dropped).
+ * One part of the status bar. The bar wraps to a second row when one is not
+ * enough. The map is decoration and goes first; after it, when two rows (or
+ * the one row a short pane allows) cannot hold the rest, the widget with the
+ * highest `drop` goes (absent: never dropped). `wrap`: where the second row
+ * starts when the bar wraps, if both rows fit that way (else the split that
+ * leaves the rows most even).
  */
-export type BarWidget =
+export type BarWidget = { wrap?: boolean } & BarWidgetKind
+
+export type BarWidgetKind =
   /** A grey minimap; the dot is the share of context used. 19 columns. */
   | { kind: 'map'; drop?: number }
   /**
    * A number: times `scale` if given, `format` with `{v}` (default `{v}`), zero-padded to `digits`;
-   * an `icon` sprite before it; a `label` over it.
+   * an `icon` sprite before it; a `label` over it. `chars`: the fewest characters the
+   * widget keeps for its text, so a growing number does not push the rest of the bar along.
+   * A value not yet known shows as dashes, without `format`.
    */
-  | { kind: 'counter'; value: BarValue; icon?: string; label?: string; format?: string; digits?: number; scale?: number; drop?: number }
+  | { kind: 'counter'; value: BarValue; icon?: string; label?: string; format?: string; digits?: number; scale?: number; chars?: number; drop?: number }
   /**
    * An item box: the hero's tier (`model`) or the weapon (`effort`) drawn with its palette swap. 9 columns.
    * `sprites` picks a sprite per shown tier (a mushroom, a flower...); tiers it lacks draw `sprite`.
    */
   | { kind: 'box'; shows: 'model' | 'effort'; sprite: string; sprites?: Partial<Record<HeroTier | WeaponTier, string>>; label: string; x?: number; y?: number; drop?: number }
   /**
-   * `count` icons filled by `value` (contextLeft, cache, effort or limitsLeft), each icon
-   * in `sprites.length - 1` steps (hearts in quarters: five sprites, empty to
-   * full). `last`: different sprites for the final icon (Mario's P). Rows of
-   * `perRow`; filled icons blink while the fill is at or under `pulseBelow` (0..1).
+   * `count` icons filled by `value`, each icon in `sprites.length - 1` steps
+   * (hearts in quarters: five sprites, empty to full). `last`: different
+   * sprites for the final icon (Mario's P). Rows of `perRow`; filled icons
+   * blink while the fill is at or under `pulseBelow`, or at or over
+   * `pulseAbove` (0..1).
    */
-  | { kind: 'meter'; value: MeterValue; count: number; perRow: number; sprites: string[]; last?: string[]; gap?: number; label?: string; pulseBelow?: number; drop?: number }
+  | { kind: 'meter'; value: MeterValue; count: number; perRow: number; sprites: string[]; last?: string[]; gap?: number; label?: string; pulseBelow?: number; pulseAbove?: number; drop?: number }
 
 export type Theme = {
   id: string

@@ -114,11 +114,11 @@ export function spritesUsed(pack: Theme): Set<string> {
   const spec = pack.scene
   if (!spec) return names
   for (const anim of [...Object.values(pack.states ?? {}), ...Object.values(pack.events ?? {}), ...Object.values(pack.overkill ?? {}), ...Object.values(pack.cold ?? {})]) {
-    for (const f of anim?.frames ?? []) for (const a of f.actors) if (!a.sprite.startsWith('@')) names.add(a.sprite)
+    for (const frames of [anim?.frames ?? [], ...(anim?.variants ?? [])]) for (const f of frames) for (const a of f.actors) if (!a.sprite.startsWith('@')) names.add(a.sprite)
   }
-  Object.values(spec.hero).forEach(n => names.add(n))
-  Object.values(spec.weapons).forEach(w => [w.sprite, w.aura].forEach(n => n && names.add(n)))
-  Object.values(spec.heroForms ?? {}).forEach(f => Object.values(f?.poses ?? {}).forEach(n => names.add(n)))
+  Object.values(spec.hero).forEach(n => n && names.add(n))
+  Object.values(spec.weapons).forEach(w => [w.sprite, w.aura, ...Object.values(w.poses ?? {}).flatMap(p => [p.sprite, p.aura])].forEach(n => n && names.add(n)))
+  Object.values(spec.heroForms ?? {}).forEach(f => Object.values(f?.poses ?? {}).forEach(n => n && names.add(n)))
   Object.values(spec.heroExtras ?? {}).forEach(x => x && names.add(x.sprite))
   for (const w of spec.bar?.widgets ?? []) {
     if (w.kind === 'counter' && w.icon) names.add(w.icon)

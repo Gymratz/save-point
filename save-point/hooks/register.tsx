@@ -19,6 +19,7 @@ import { backstopText, callKey, crossing, effortCheckText, effortHint, effortSta
 import {
   bandSegments,
   cacheInfo,
+  confirmTtl,
   detectTtl,
   fmtClock,
   fmtReset,
@@ -39,7 +40,6 @@ import { resolveTheme, THEMES, themeId } from './themes'
 import {
   aboutLines,
   activityFor,
-  BAR_ROWS,
   duration,
   fill,
   hasMessage,
@@ -48,20 +48,24 @@ import {
   isOverkill,
   isRoutine,
   liveLog,
+  LOG_ROWS,
+  logLines,
   meterLines,
   pushLog,
+  questLayout,
   renderBar,
   renderLineup,
   renderScene,
-  sceneMinRows,
+  sceneStart,
   stepScene,
+  takes,
   TIER_MODELS,
   WEAPON_TIERS,
   weaponTier,
 } from './themes/scene'
-import type { BarState, LogLine, MeterData, PlayingEvent, PreviewStep, QueuedEvent, SceneState } from './themes/scene'
+import type { BarState, LogLine, MeterData, SceneProgress, SceneState } from './themes/scene'
 import { ACTIVITY_STATES, EVENT_NAMES } from './themes/types'
-import type { ActivityState, EventName, HeroTier, Theme, WeaponTier } from './themes/types'
+import type { EventName, HeroTier, Theme, WeaponTier } from './themes/types'
 import type { PaneInput, TtlSource } from './pane'
 
 const ZERO: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
@@ -105,6 +109,8 @@ let warmUntil = 0
 let tickTimer: Timer | null = null
 let mainSteps: StepUsage[] = []
 let agentSteps: StepUsage[] = []
+/** A TTL verdict that would change the one in use, waiting for a second turn to agree. */
+let ttlPending: Ttl | null = null
 /** The session a /clear or resume just ended; set until the conversation that took its place is read. */
 let replacedFrom: string | null = null
 
@@ -579,23 +585,41 @@ const TABS: { id: string; label: string; only?: string[] }[] = [
 const SCENE_MAX_COLUMNS = 96
 /** Queued events older than this are dropped, in seconds. */
 const EVENT_MAX_AGE_S = 5
+/**
+ * The longest a tool's loop holds the scene before its result plays, in
+ * seconds: one full cycle of the loop when that is shorter.
+ */
+const DWELL_MAX_S = 2.5
 
-let sceneActivity: ActivityState = 'idle'
-let sceneTick = 0
+/**
+ * The scene between frames. The hooks write `live` (what the session is doing)
+ * and `started` (a tool loop to show); the animation step does the rest.
+ */
+let scene: SceneProgress = sceneStart()
+/** The Quest tab as last laid out: the Rasters the animation blits into. Zero rows: not drawn. */
 let sceneCols = 0
-let sceneHasScene = false
-let sceneQueue: QueuedEvent[] = []
-let scenePlaying: PlayingEvent | null = null
+let sceneRows = 0
+let barRows = 0
+/** Rows of widgets the bar may take, and how many it wanted when the tab was laid out. */
+let barMax = 1
+let barWanted = 1
 let sceneLog: LogLine[] = []
 /** What the log showed at the last draw, to redraw when a line comes or goes. */
 let sceneLogShown = ''
 let animTimer: Timer | null = null
 let animBusy = false
+/**
+ * Where the scene's clock started. Ticks follow the time since, not the count
+ * of timer calls: a call that comes late (a busy host) skips frames instead of
+ * slowing the scene, and calls that bunch up cannot race it.
+ */
+let animEpoch: { at: number; tick: number } | null = null
+/** The third-of-the-rate step idle last drew. */
+let idleStep = -1
 let lastIdentity: { hero: HeroTier; weapon: WeaponTier } | null = null
 let sceneMark = -1
 let coldSent = false
 let limitsOver: Set<string> | null = null
-let preview: PreviewStep[] = []
 let paletteMode: 'dark' | 'light' = 'dark'
 /** Picked on the About tab: the hero and weapon the scene shows instead of the session's own. Display only. */
 let tryHero: HeroTier | null = null
@@ -609,8 +633,14 @@ function fps(options: PluginOptions): number {
 /** Queues a one-shot for the scene; nothing queues while no scene is animating. */
 function sceneEvent(name: EventName, vars: Record<string, string> = {}) {
   if (!animTimer) return
-  sceneQueue.push({ name, at: sceneTick, vars })
-  if (sceneQueue.length > 20) sceneQueue.shift()
+  scene.queue.push({ name, at: scene.tick, vars })
+  if (scene.queue.length > 20) scene.queue.shift()
+}
+
+/** A tool (or an agent) began: its loop takes the scene for a full cycle, however fast it returns. */
+function sceneTool(tool: string) {
+  scene.live = activityFor(tool)
+  if (scene.live !== 'thinking') scene.started = scene.live
 }
 
 function themeOf(v: View): string {
@@ -634,10 +664,11 @@ async function sceneState($: EngineInterface, options: PluginOptions): Promise<S
   const weapon = tryWeapon ?? weaponTier(await read($, effort))
   const c = await cacheNow($, options)
   return {
-    tick: sceneTick,
+    tick: scene.tick,
     hero,
     weapon,
-    activity: sceneActivity,
+    activity: scene.activity,
+    since: scene.since,
     percent: snap?.percent ?? 0,
     overkill: options.overkillHint !== false && isOverkill(hero, weapon, isRoutine(a.calls)),
     cacheCold: c.isCold,
@@ -645,26 +676,22 @@ async function sceneState($: EngineInterface, options: PluginOptions): Promise<S
     staminaSeconds: c.left === null ? null : Math.max(0, c.left / 1000),
     nextWarmUsd: c.floors?.warm ?? null,
     nextColdUsd: c.floors?.cold ?? null,
-    event: scenePlaying,
+    event: scene.playing,
   }
 }
 
-async function meterData(
-  $: EngineInterface,
-  options: PluginOptions,
-  theme: Theme,
-  log: string[],
-  fallback: string | null,
-): Promise<MeterData | null> {
+async function meterData($: EngineInterface, options: PluginOptions, theme: Theme): Promise<MeterData | null> {
   const snap = await read($, snapshot)
   if (!snap) return null
   const cost = await read($, turn)
-  const level = await read($, effort)
+  const effortLevel = await read($, effort)
   const now = await $.clock.now()
   const c = await cacheNow($, options)
   const spec = theme.scene
+  const th = thresholds(options)
   return {
     percent: snap.percent ?? 0,
+    level: level(snap.percent ?? 0, th.warn, th.alert, th.critical, th.orange),
     tokens: snap.tokens,
     window: snap.window,
     spendUsd: snap.costUsd,
@@ -675,18 +702,15 @@ async function meterData(
     limits: snap.rateLimits.map(r => ({ label: rateLabel(r.kind), percent: r.percentUsed, resets: r.resetsAt ? fmtReset(r.resetsAt, now) : null })),
     heroName: spec ? spec.heroNames[tryHero ?? heroTier(snap.model)] : prettyModel(snap.model),
     model: tryHero ? `${TIER_MODELS[tryHero]}, preview` : prettyModel(snap.model),
-    weaponName: spec ? spec.weapons[tryWeapon ?? weaponTier(level)].name : (level ?? ''),
-    effort: tryWeapon ? `${tryWeapon}, preview` : level,
-    log,
-    fallback,
+    weaponName: spec ? spec.weapons[tryWeapon ?? weaponTier(effortLevel)].name : (effortLevel ?? ''),
+    effort: tryWeapon ? `${tryWeapon}, preview` : effortLevel,
   }
 }
 
-async function barState($: EngineInterface, options: PluginOptions): Promise<BarState> {
+async function barState($: EngineInterface, s: SceneState): Promise<BarState> {
   const snap = await read($, snapshot)
-  const s = await sceneState($, options)
   return {
-    tick: sceneTick,
+    tick: s.tick,
     percent: snap?.percent ?? 0,
     spend: Math.round((snap?.costUsd ?? 0) * 100),
     hero: s.hero,
@@ -701,9 +725,8 @@ async function barState($: EngineInterface, options: PluginOptions): Promise<Bar
 function stopAnim() {
   animTimer?.cancel()
   animTimer = null
-  sceneQueue = []
-  scenePlaying = null
-  preview = []
+  animEpoch = null
+  scene = { ...sceneStart(), tick: scene.tick, live: scene.live, picks: scene.picks }
 }
 
 function startAnim($: EngineInterface, options: PluginOptions) {
@@ -716,25 +739,32 @@ async function animate($: EngineInterface, options: PluginOptions) {
   if (animBusy) return
   animBusy = true
   try {
-    sceneTick += 1
     const theme = await activeTheme($, options)
-    if (!theme.scene || !sceneCols) return
+    const now = await $.clock.now()
+    const rate = fps(options)
+    const period = Math.round(1000 / rate)
+    animEpoch ??= { at: now - period, tick: scene.tick }
+    const due = animEpoch.tick + Math.round((now - animEpoch.at) / period)
+    if (due <= scene.tick) return
+    if (!theme.scene || !sceneCols) {
+      scene.tick = due
+      return
+    }
 
-    const playing = scenePlaying
-    const stepped = stepScene(
+    // The session's state first (it awaits), then the step in one go: a hook
+    // that fires meanwhile has written to `scene` before the step reads it.
+    const live = await sceneState($, options)
+    const playing = scene.playing
+    scene = stepScene(
       theme,
-      { tick: sceneTick, activity: sceneActivity, playing: scenePlaying, queue: sceneQueue, preview },
-      EVENT_MAX_AGE_S * fps(options),
+      { ...scene, tick: Math.max(due, scene.tick + 1) },
+      { maxAge: EVENT_MAX_AGE_S * rate, maxDwell: Math.ceil(DWELL_MAX_S * rate), overkill: live.overkill, cold: live.cacheCold },
     )
-    sceneActivity = stepped.activity
-    scenePlaying = stepped.playing
-    sceneQueue = stepped.queue
-    preview = stepped.preview
+    const state: SceneState = { ...live, tick: scene.tick, activity: scene.activity, since: scene.since, event: scene.playing }
 
     // A moment that just began goes on the log: its message, else its line.
-    const now = await $.clock.now()
-    if (scenePlaying && scenePlaying !== playing) {
-      const ev = scenePlaying
+    if (scene.playing && scene.playing !== playing) {
+      const ev = scene.playing
       const template = hasMessage(theme, ev.name) ? ev.name : theme.text[ev.name]
       sceneLog = pushLog(sceneLog, fill(theme, template, ev.vars), now)
     }
@@ -745,18 +775,20 @@ async function animate($: EngineInterface, options: PluginOptions) {
     }
 
     // Idle runs at a third of the rate.
-    if (sceneActivity === 'idle' && !scenePlaying && !preview.length && sceneTick % 3 !== 0) return
+    const third = Math.floor(scene.tick / 3)
+    if (scene.activity === 'idle' && !scene.playing && !scene.preview.length && third === idleStep) return
+    idleStep = third
 
-    if (sceneHasScene) {
-      const scene = renderScene(theme, await sceneState($, options), sceneCols)
-      if (scene) {
-        const r = await $.ui.blit({ requestId: PANE, key: 'scene', cells: scene.cells })
+    if (sceneRows) {
+      const drawn = renderScene(theme, state, sceneCols, sceneRows)
+      if (drawn) {
+        const r = await $.ui.blit({ requestId: PANE, key: 'scene', cells: drawn.cells })
         if (r.deny) {
           stopAnim()
           return
         }
-        if (scene.caption) {
-          sceneLog = pushLog(sceneLog, scene.caption, now)
+        if (drawn.caption) {
+          sceneLog = pushLog(sceneLog, drawn.caption, now)
           const shownNow = liveLog(sceneLog, now).join('\n')
           if (shownNow !== sceneLogShown) {
             sceneLogShown = shownNow
@@ -765,8 +797,13 @@ async function animate($: EngineInterface, options: PluginOptions) {
         }
       }
     }
-    const bar = renderBar(theme, await barState($, options), sceneCols)
+    const bar = renderBar(theme, await barState($, state), sceneCols, barMax)
     if (bar) {
+      // A counter grew (or shrank) across a row: the tab lays the bar out again before it is drawn.
+      if (bar.wanted !== barWanted || bar.rows !== barRows) {
+        $.ui.invalidate('ui.render')
+        return
+      }
       const r = await $.ui.blit({ requestId: PANE, key: 'bar', cells: bar.cells })
       if (r.deny) stopAnim()
     }
@@ -826,10 +863,15 @@ async function themeCommand($: EngineInterface, sub: string, options: PluginOpti
       const opened = await openPane($)
       if (!opened.isPlaced) return { text: 'Widen the terminal to preview the theme.' }
     }
+    // Each state for three seconds (longer when it has several takes to show), then every take of every moment.
     const f = fps(options)
-    preview = [
-      ...ACTIVITY_STATES.map(name => ({ kind: 'state' as const, name, ticks: f * 3 })),
-      ...EVENT_NAMES.map(name => ({ kind: 'event' as const, name, ticks: duration(theme.events[name]) + 2 })),
+    scene.preview = [
+      ...ACTIVITY_STATES.map(name => ({
+        kind: 'state' as const,
+        name,
+        ticks: Math.max(f * 3, takes(theme.states[name]).length > 1 ? takes(theme.states[name]).reduce((n, _, v) => n + duration(theme.states[name], v), 0) : 0),
+      })),
+      ...EVENT_NAMES.flatMap(name => takes(theme.events[name]).map((_, variant) => ({ kind: 'event' as const, name, variant, ticks: duration(theme.events[name], variant) + 2 }))),
     ]
     $.ui.toast(`Previewing ${theme.name}: every state, then every event`)
     return {}
@@ -908,7 +950,7 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
       replacedFrom = e.sessionId
       sceneMark = -1
-      sceneActivity = 'idle'
+      scene.live = 'idle'
       warmUntil = 0
       mainSteps = []
       agentSteps = []
@@ -924,7 +966,7 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     await afterReplaced($, options, true)
-    sceneActivity = 'thinking'
+    scene.live = 'thinking'
     mainSteps = []
     agentSteps = []
     const u = await $.session.usage()
@@ -972,7 +1014,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     if (e.agentId) return r
-    sceneActivity = 'idle'
+    scene.live = 'idle'
     if (e.reason === 'answer') sceneEvent('turnComplete')
     const u = await $.session.usage()
     const t = await read($, turn)
@@ -981,7 +1023,11 @@ export const register: Register = (on, options) => {
       const delta = now - t.startUsd
       await update($, turn, x => ({ ...x, lastUsd: delta }))
       const found = detectTtl(delta, mainSteps, agentSteps, mult)
-      if (found) await update($, cache, c => ({ ...c, detected: found }))
+      if (found) {
+        const settled = confirmTtl((await read($, cache)).detected, ttlPending, found)
+        ttlPending = settled.pending
+        await update($, cache, c => ({ ...c, detected: settled.detected }))
+      }
     }
     if (u.context.tokens !== undefined) {
       const tokensNow = u.context.tokens
@@ -998,19 +1044,19 @@ export const register: Register = (on, options) => {
       if (e.tool === 'Read') await addFile($, 'read', e.file_path)
       else if (e.tool === 'Write' || e.tool === 'Edit') await addFile($, 'written', e.file_path)
       else if (e.tool === 'NotebookEdit') await addFile($, 'written', e.notebook_path)
-      sceneActivity = activityFor(String(e.tool))
+      sceneTool(String(e.tool))
     }
     const r = await next(e)
     await refresh($)
     if (e.agentId) return r
     sceneEvent(r.deny !== undefined || r.isError === true ? 'toolError' : 'toolSuccess')
-    sceneActivity = 'thinking'
+    scene.live = 'thinking'
     const { tool_use_id: _id, agentId: _agent, ...input } = e as Record<string, unknown>
     return apToolResult($, options, String(e.tool), input, r)
   })
 
   on('agent.spawn', async ($, e, next) => {
-    sceneActivity = 'agents'
+    sceneTool('Agent')
     await update($, activity, a => ({ ...a, spawns: a.spawns + 1 }))
     return next(e)
   })
@@ -1021,6 +1067,9 @@ export const register: Register = (on, options) => {
 
     if (arg === 'reset') {
       await resetCounters($)
+      // The detected cache TTL too: back to the assumed 1h until a turn shows otherwise.
+      ttlPending = null
+      await update($, cache, c => ({ ...c, detected: null }))
       $.ui.toast('Save Point counters reset')
       return {}
     }
@@ -1226,7 +1275,7 @@ export const register: Register = (on, options) => {
           {lineup && 'Raster' in table ? <table.Raster key="lineup" columns={lineup.columns} rows={lineup.rows} cells={lineup.cells} /> : null}
           {tryPickers}
           <Text> </Text>
-          {drawLines(aboutLines(theme, palette, current), 'a')}
+          {drawLines(aboutLines(theme, palette, current, { columns: width, rows }), 'a')}
         </Box>
       )
     }
@@ -1245,33 +1294,46 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // The Quest tab: status bar, scene, themed meters.
+    // The Quest tab: status bar, scene, recent log, themed meters. The words
+    // keep their rows; the scene takes what is left (see `questLayout`).
     const hasRaster = 'Raster' in table
     const minCols = Number(options.sceneMinColumns) || 40
     const cols = Math.min(width, SCENE_MAX_COLUMNS)
     const canDraw = hasRaster && width >= minCols
-    sceneHasScene = canDraw && rows >= sceneMinRows(theme, picker ? 2 : 1)
-    sceneCols = canDraw ? cols : 0
-    const fallback = canDraw && sceneHasScene ? null : theme.text[scenePlaying?.name ?? sceneActivity]
-    const meters = await meterData($, options, theme, liveLog(sceneLog, await $.clock.now()), fallback)
+    const meters = await meterData($, options, theme)
     const lines = meters ? meterLines(theme, palette, meters, fmtClock, fmtTokens) : []
+    const state = await sceneState($, options)
+    const bars = await barState($, state)
+    barWanted = canDraw ? (renderBar(theme, bars, cols)?.wanted ?? 1) : 1
+    const layout = questLayout(theme, { rows, tabRows: picker ? 2 : 1, meterRows: lines.length, barWanted })
+    sceneCols = canDraw ? cols : 0
+    sceneRows = canDraw ? layout.scene : 0
+    barMax = layout.bar
+    barRows = 0
 
     const parts: RenderChildren[] = [tabs]
     if (canDraw && 'Raster' in table) {
       const Raster = table.Raster
-      const bar = renderBar(theme, await barState($, options), cols)
-      if (bar) parts.push(<Raster key="bar" columns={bar.columns} rows={BAR_ROWS} cells={bar.cells} />)
-      if (sceneHasScene) {
-        const scene = renderScene(theme, await sceneState($, options), cols)
-        if (scene) parts.push(<Raster key="scene" columns={scene.columns} rows={scene.rows} cells={scene.cells} />)
+      const bar = renderBar(theme, bars, cols, barMax)
+      if (bar) {
+        barRows = bar.rows
+        parts.push(<Raster key="bar" columns={bar.columns} rows={bar.rows} cells={bar.cells} />)
+      }
+      if (sceneRows) {
+        const drawn = renderScene(theme, state, cols, sceneRows)
+        if (drawn) parts.push(<Raster key="scene" columns={drawn.columns} rows={drawn.rows} cells={drawn.cells} />)
       }
       startAnim($, options)
     } else {
       stopAnim()
     }
+    // Without a scene, its moment or loop in words (the live activity when nothing animates).
+    const fallback = sceneRows ? null : theme.text[scene.playing?.name ?? (animTimer ? scene.activity : scene.live)]
+    const log = logLines(palette, liveLog(sceneLog, await $.clock.now()), sceneRows ? layout.log : LOG_ROWS, fallback, width)
     return (
       <Box flexDirection="column">
         {parts}
+        {drawLines(log, 'g')}
         {drawLines(lines, 'm')}
       </Box>
     )

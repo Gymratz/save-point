@@ -3,13 +3,19 @@
 // The model is the miner's armor (leather, iron, enchanted diamond, enchanted
 // netherite), effort is the pickaxe, context is how deep you have mined (grass
 // and sky, stone, deepslate, then lava over bedrock), the cache is the hunger
-// bar, cents are emeralds.
+// bar (and the day clock in the corner: when it runs out the light goes, night
+// above ground and a dead torch below, on an empty stomach), cents are emeralds.
+//
+// Layout: the ring and its price tag own columns 0..10 down to y 16. The miner
+// stands at 12..27 (the champion at 10..29) and every prop is in 30..45, so the
+// action is whole in a 48-column pane. Scenery past column 45 hangs from the
+// right edge and joins at 58, 80 and 96 columns.
 //
 // The miner and the pickaxe use single-letter pixel keys (so 'C' is the
 // chestplate) that every armor tier and pickaxe material swaps. Scenery is
 // drawn with a legend per sprite, or painted in code (terrain strips).
 
-import { at, hero, loop, once, weapon } from './kit'
+import { at, hero, loop, once, mixHex, weapon } from './kit'
 import { rotate } from './pixel'
 import type { Actor, HeroTier, SceneText, Sprite, Theme } from './types'
 
@@ -27,7 +33,8 @@ const pixels: Record<string, string> = {
   l: '#bcbcbc',
   B: '#bcbcbc', // boots
   b: '#7c7c7c',
-  E: '#ffffff', // enchantment glint spots
+  E: '#ffffff', // enchantment glint spot on the chest
+  e: '#ffffff', // and the one on the helmet (hair on a bare head)
   T: '#7c7c7c', // trim
   R: '#c4262e', // cape
   r: '#7e1218',
@@ -86,7 +93,6 @@ const pixels: Record<string, string> = {
   ironN: '#ffffff',
   diaM: '#5ff2e6',
   diaP: '#1fa39a',
-  diaN: '#c8fffa',
   nethM: '#625a60',
   nethP: '#36302f',
   // Terrain
@@ -139,11 +145,33 @@ const pixels: Record<string, string> = {
   flameW: '#fffbe0',
   sunY: '#fff26b',
   sunO: '#f5c542',
-  sunset: '#ff9a3a',
   sunsetD: '#e0602a',
   cloudW: '#ffffff',
   cloudG: '#e4ecf6',
   night: '#0c1230',
+  dusk1: '#241a4e',
+  dusk2: '#4e2a6e',
+  dusk3: '#93406e',
+  dusk4: '#d8684e',
+  dusk5: '#f6a84a',
+  cave1: '#34343e',
+  cave2: '#2a2a33',
+  cave3: '#22222a',
+  caveD1: '#24242c',
+  caveD2: '#1c1c23',
+  caveD3: '#15151b',
+  dim1: '#1a1a21',
+  dim2: '#14141a',
+  dim3: '#0f0f14',
+  dark1: '#0e0e14',
+  dark2: '#0a0a0f',
+  dark3: '#060609',
+  glow1: '#8a3410',
+  glow2: '#5a1c0a',
+  glow3: '#34120c',
+  glow4: '#1c0c0c',
+  birchL: '#9ad85e',
+  pageS: '#cfc4a8',
   starW: '#f4f4ff',
   starD: '#9aa6d8',
   moon: '#f0f0d8',
@@ -185,6 +213,7 @@ const pixels: Record<string, string> = {
   wolfS: '#b8b8b8',
   collar: '#d02828',
   boneW: '#f0ead8',
+  boneY: '#ead79a',
   love: '#ff5a7a',
   orbG: '#a8ff3a',
   orbY: '#f0ff8a',
@@ -193,7 +222,8 @@ const pixels: Record<string, string> = {
   smoke2: '#cfcfcf',
   smoke3: '#9a9a9a',
   boomO: '#ffcc3a',
-  sweat: '#8cd0fc',
+  sweat: '#e6f6ff',
+  sweatS: '#6ab4f0',
   borderR: '#ff3a3a',
   borderD: '#c01a1a',
   toastF: '#212121',
@@ -210,17 +240,21 @@ const pixels: Record<string, string> = {
   mapGray: '#555555',
   heart: '#e8202c',
   heartL: '#ff9a9a',
+  heartD: '#a00f1c',
   heartE: '#4a1616',
+  heartED: '#300d0d',
   meat: '#b4632f',
   meatL: '#e09454',
+  meatD: '#84421c',
   foodE: '#3e2c1c',
+  foodED: '#2a1d12',
   emerald: '#17dd62',
   emeraldL: '#a8ffc8',
   emeraldD: '#0a8a3a',
   clockDay: '#ffd84a',
-  clockNight: '#2a3470',
-  clockCold: '#5a5a5a',
-  lineupBg: '#c6c6c6',
+  clockNight: '#3442a0',
+  clockCold: '#c8d4e6',
+  lineupBg: '#78a4ff',
   msgBg: '#1a1a1a',
 }
 
@@ -309,15 +343,16 @@ const floorGrass = paint(STRIP, 6, (x, y) => {
 })
 const floorStone = paint(STRIP, 6, (x, y) => oreAt(x, y, stoneOre(x >> 3)) ?? tone(STONE, x, y, 4))
 const floorDeep = paint(STRIP, 6, (x, y) => oreAt(x, y, deepOre(x >> 3)) ?? (y % 3 === 0 && rnd(x, y, 6) < 0.5 ? 'deep3' : tone(DEEP, x, y, 5)))
+// At the bottom the miner walks a deepslate shelf on piers over the lava; bedrock under it.
 const floorLava = paint(STRIP, 6, (x, y) => {
-  const bx = x >> 3
-  if (bx % 5 === 2 || bx % 5 === 3) {
-    if (y === 0) return rnd(x, y, 7) < 0.4 ? 'lava1' : 'lava2'
-    return y < 3 ? (rnd(x, y, 8) < 0.3 ? 'lava2' : 'lava3') : rnd(x, y, 9) < 0.3 ? 'lava4' : 'lava3'
-  }
-  if (y >= 4) return tone(BEDROCK, x, y, 10)
-  return oreAt(x, y, bx % 4 === 0 ? ORES.dia! : null) ?? tone(DEEP, x, y, 11)
+  if (y < 2) return oreAt(x, y + 1, (x >> 3) % 4 === 0 ? ORES.dia! : null) ?? tone(DEEP, x, y, 11)
+  if (x % 16 < 2) return tone(DEEP, x, y, 11)
+  if (y === 5) return tone(BEDROCK, x, y, 10)
+  if (y === 2) return rnd(x, y, 7) < 0.4 ? 'lava1' : 'lava2'
+  return rnd(x, y, 8) < 0.3 ? (y === 3 ? 'lava2' : 'lava4') : 'lava3'
 })
+/** Where a lava fall lands: lava up to the floor line. */
+const lavaPool = (w: number) => paint(w, 6, (x, y) => (y === 0 ? (rnd(x, y, 7) < 0.5 ? 'lava1' : 'lava2') : y < 3 ? (rnd(x, y, 8) < 0.3 ? 'lava2' : 'lava3') : rnd(x, y, 9) < 0.3 ? 'lava4' : 'lava3'))
 /** A cave ceiling: rock with a ragged lower edge. */
 const ceiling = (ramp: [string, string, string], ore: (bx: number) => [string, string] | null, seed: number) =>
   paint(STRIP, 6, (x, y) => {
@@ -325,16 +360,49 @@ const ceiling = (ramp: [string, string, string], ore: (bx: number) => [string, s
     if (y === 4 && rnd(x, 0, seed + 1) < 0.25) return null
     return oreAt(x, y + 2, ore(x >> 3)) ?? tone(ramp, x, y, seed)
   })
+/** The rock behind a cave, in two-pixel grains, darker than the floor so armor and props stand out. Taller than the tallest scene. */
+const caveWall = (ramp: [string, string, string], seed: number) => paint(STRIP, 60, (x, y) => tone(ramp, x >> 1, y >> 1, seed))
+/** The same rock, `h` rows of it with a ragged lower edge: over the lava it stops short of the floor and the glow shows under it. */
+const caveBrow = (h: number) => paint(STRIP, h, (x, y) => (y >= h - 4 && rnd(x >> 1, y >> 1, 19) < (y - (h - 6)) / 5 ? null : tone(['caveD1', 'caveD2', 'caveD3'], x >> 1, y >> 1, 18)))
 
-/** Night over the whole scene above the floor: stars and the square moon. */
-const nightSky = paint(STRIP, 34, (x, y) => {
-  if (x >= 28 && x < 34 && y >= 3 && y < 9) return x === 28 || y === 8 ? 'moonD' : 'moon'
+// Skies that cover the scene above the floor at any height it grows to (the
+// design height shows their lower 34 rows), for the surface. The moon and the
+// low sun are over the second prop column, clear of the bed, the torch and a
+// two-line message.
+const SKY_H = 54
+const nightSky = paint(STRIP, SKY_H, (x, y) => {
+  if (x >= 38 && x < 44 && y >= 32 && y < 38) return x === 38 || y === 37 ? 'moonD' : 'moon'
   const r = rnd(x, y, 12)
   return r < 0.012 ? 'starW' : r < 0.022 ? 'starD' : 'night'
 })
+const DUSK = ['dusk1', 'dusk2', 'dusk3', 'dusk4', 'dusk5']
+const duskSky = paint(STRIP, SKY_H, (x, y) => {
+  if (x >= 38 && x < 46 && y >= SKY_H - 8) return x === 38 || x === 45 || y === SKY_H - 8 ? 'sunsetD' : 'sunY'
+  // Bands from indigo down to gold at the horizon, checkered where they meet.
+  const k = ((y - 16) / (SKY_H - 17)) * 4 + ((x + y) % 2 ? 0.06 : -0.06)
+  return DUSK[Math.max(0, Math.min(4, Math.round(k)))]!
+})
 
-/** A lava fall down the right wall. */
-const lavaFall = paint(4, 29, (x, y) => ((y + x * 3) % 7 === 0 ? 'lava1' : (y + x) % 5 === 0 ? 'lava3' : x === 0 || x === 3 ? 'lava3' : 'lava2'))
+/** A stone ramp `t` (0..1) of the way to black. */
+const dimmed = (ramp: [string, string, string], t: number) => ramp.map(n => mixHex(pixels[n]!, '#000000', t)) as [string, string, string]
+/**
+ * The cave with the torch guttering, or out: the rock barely seen, no sky. As tall as the skies, and six
+ * rows more: the cave's own floor (`floor`: its ramp, and how far to black) without its ore. Over the lava
+ * (`glow`, from the floor up) a dull red is left along the floor instead, and the lava keeps its light.
+ */
+const caveDark = (ramp: [string, string, string], seed: number, o: { glow?: string[]; floor?: [[string, string, string], number] } = {}) => {
+  const ground = o.floor ? dimmed(...o.floor) : null
+  const deep = o.floor?.[0] === DEEP
+  return paint(STRIP, SKY_H + 6, (x, y) => {
+    // The same grain as `floorStone` and `floorDeep`.
+    if (y >= SKY_H) return !ground ? null : deep ? ((y - SKY_H) % 3 === 0 && rnd(x, y - SKY_H, 6) < 0.5 ? ground[2] : tone(ground, x, y - SKY_H, 5)) : tone(ground, x, y - SKY_H, 4)
+    const g = (SKY_H - 1 - y) / 3 + ((x + y) % 2 ? 0.3 : -0.3)
+    return o.glow && g < o.glow.length ? o.glow[Math.max(0, Math.floor(g))]! : tone(ramp, x >> 1, y >> 1, seed)
+  })
+}
+
+/** A lava fall, `w` wide. Drawn twice, hung from the ceiling and standing on the floor, so it spans a taller scene too. */
+const lavaFall = (w: number) => paint(w, 30, (x, y) => ((y + x * 3) % 7 === 0 ? 'lava1' : (y + x) % 5 === 0 ? 'lava3' : w > 2 && (x === 0 || x === w - 1) ? 'lava3' : 'lava2'))
 
 /** Explosion clouds: rings of white puffs. */
 const puff = (w: number, h: number, seed: number, hot: boolean) =>
@@ -347,15 +415,19 @@ const puff = (w: number, h: number, seed: number, hot: boolean) =>
     return d < 0.45 ? 'smoke1' : d < 0.75 ? 'smoke2' : 'smoke3'
   })
 
-/** The world border: a wall of red diagonal stripes. */
-const borderWall = paint(6, 34, (x, y) => ((x + y) % 4 === 0 ? 'borderR' : (x + y) % 4 === 1 ? 'borderD' : null))
+/** The world border: a wall of red diagonal stripes rising from the ground, thinning out at the top. */
+const borderWall = paint(6, 30, (x, y) => {
+  const stripe = (x + y) % 4
+  if (stripe > 1 || (y < 8 && rnd(x, y, 16) > (y + 1) / 9)) return null
+  return stripe === 0 ? 'borderR' : 'borderD'
+})
 
-/** The advancement toast: a dark panel with a diamond. */
+/** The advancement toast: a dark panel with a diamond. Seven rows: two of text, and a pixel to spare over a raised diamond. */
 const DIAMOND_ICON = ['.cCCc.', 'cWCCCc', 'kcCCck', '.kcck.', '..kk..']
-const toast = paint(27, 8, (x, y) => {
-  const edge = x === 0 || x === 26 || y === 0 || y === 7
-  if ((x === 0 || x === 26) && (y === 0 || y === 7)) return null
-  const icon = DIAMOND_ICON[y - 2]?.[x - 2]
+const toastPanel = paint(27, 7, (x, y) => {
+  const edge = x === 0 || x === 26 || y === 0 || y === 6
+  if ((x === 0 || x === 26) && (y === 0 || y === 6)) return null
+  const icon = DIAMOND_ICON[y - 1]?.[x - 2]
   if (icon && icon !== '.') return { c: 'diaS', C: 'diaL', W: 'W', k: 'diaD' }[icon] ?? null
   return edge ? 'toastB' : 'toastF'
 })
@@ -366,7 +438,7 @@ const toast = paint(27, 8, (x, y) => {
 
 const HEAD = [
   '....AAAAAAAA....',
-  '...AAAAAAAAEA...',
+  '...AAAAAAAAeA...',
   '...aaaaaaaaaaa..',
   '...aaSSSSSSSS...',
   '...aaSWKSSWKS...',
@@ -382,7 +454,7 @@ const STRIDE = ['....LLLLLLLL....', '...LLLl.LLLl....', '..LLLl...LLLl...', '..B
 // trimmed helm, broad shoulders and a cape. Feet level with the standard miner's.
 const G_HEAD = [
   '......AAAAAAAAA.....',
-  '.....AAAEAAAAAAA....',
+  '.....AAAeAAAAAAA....',
   '....AAAAAAAAAAAAA...',
   '....aTTTTTTTTTTTTT..',
   '....aaSSSSSSSSSS....',
@@ -417,7 +489,7 @@ const sprites: Theme['sprites'] = {
   itemGet: {
     rows: [
       'SS..AAAAAAAA..SS',
-      'cC.AAAAAAAAEA.Cc',
+      'cC.AAAAAAAAeA.Cc',
       'cC.aaaaaaaaaaaCc',
       'cC.aaSSSSSSSS.Cc',
       'cC.aaSWKSSWKS.Cc',
@@ -449,7 +521,7 @@ const sprites: Theme['sprites'] = {
   gItemGet: {
     rows: [
       '.SS...AAAAAAAAA...SS',
-      '.cC..AAAEAAAAAAA..Cc',
+      '.cC..AAAeAAAAAAA..Cc',
       '.cC.AAAAAAAAAAAAA.Cc',
       '.cC.aTTTTTTTTTTTTTCc',
       '.cC.aaSSSSSSSSSS..Cc',
@@ -473,12 +545,13 @@ const sprites: Theme['sprites'] = {
     legend: { g: 'glint' },
   },
   // Status bar
-  heart0: spr(['ee.ee', 'eeeee', 'eeeee', '.eee.', '..e..'], { e: 'heartE' }),
-  heart1: spr(['hh.ee', 'Hhhee', 'hhhee', '.hhe.', '..h..'], { h: 'heart', H: 'heartL', e: 'heartE' }),
-  heart2: spr(['hh.hh', 'Hhhhh', 'hhhhh', '.hhh.', '..h..'], { h: 'heart', H: 'heartL' }),
-  food0: spr(['..eee', '.eeee', '.eeee', '.ee..', 'e....'], { e: 'foodE' }),
-  food1: spr(['..eMM', '.eMMm', '.emmm', '.ee..', 'e....'], { M: 'meatL', m: 'meat', e: 'foodE' }),
-  food2: spr(['..MMM', '.MMMm', '.mmmm', '.bm..', 'b....'], { M: 'meatL', m: 'meat', b: 'boneW' }),
+  // Three and four pixels wide, a pixel apart, the last row blank so the two rows of five do not touch.
+  heart0: spr(['e.e', 'eee', 'eeE', '.E.', '...'], { e: 'heartE', E: 'heartED' }),
+  heart1: spr(['H.e', 'hhe', 'hhE', '.h.', '...'], { h: 'heart', H: 'heartL', e: 'heartE', E: 'heartED' }),
+  heart2: spr(['H.h', 'hhh', 'hhd', '.d.', '...'], { h: 'heart', H: 'heartL', d: 'heartD' }),
+  food0: spr(['.ee.', 'eeeE', 'eeEE', '.eE.', 'e...'], { e: 'foodE', E: 'foodED' }),
+  food1: spr(['.Me.', 'MMeE', 'MmEE', '.bE.', 'b...'], { M: 'meatL', m: 'meat', e: 'foodE', E: 'foodED', b: 'boneW' }),
+  food2: spr(['.MM.', 'MMMm', 'MMmd', '.bd.', 'b...'], { M: 'meatL', m: 'meat', d: 'meatD', b: 'boneW' }),
   emeraldIcon: spr(['.g.', 'gGg', 'ggd', '.d.'], { g: 'emerald', G: 'emeraldL', d: 'emeraldD' }),
   chestIcon: { rows: ['CC.CC', 'CcCcC', 'cCCCc', '.CEC.', '.CCC.', '.ccc.'] },
   pickIcon: { rows: ['.MMMn', '...wM', '..w.m', '.w...', 'w....'] },
@@ -489,38 +562,52 @@ const sprites: Theme['sprites'] = {
   floorLava,
   ceilStone: ceiling(STONE, stoneOre, 13),
   ceilDeep: ceiling(DEEP, deepOre, 14),
+  caveStone: caveWall(['cave1', 'cave2', 'cave3'], 17),
+  caveDeep: caveWall(['caveD1', 'caveD2', 'caveD3'], 18),
+  caveBrow: caveBrow(20),
+  caveBrowTall: caveBrow(36),
   nightSky,
-  lavaFall,
-  sun: spr(['oooooooo', 'oyyyyyyo', 'oyyyyyyo', 'oyyyyyyo', 'oyyyyyyo', 'oyyyyyyo', 'oyyyyyyo', 'oooooooo'], { o: 'sunO', y: 'sunY' }),
+  duskSky,
+  // Half-dark is one step down from each cave's own rock; dark is the same rock everywhere, over each cave's floor.
+  stoneDim: caveDark(['caveD1', 'caveD2', 'caveD3'], 23, { floor: [STONE, 0.45] }),
+  deepDim: caveDark(['dim1', 'dim2', 'dim3'], 23, { floor: [DEEP, 0.4] }),
+  lavaDim: caveDark(['dim1', 'dim2', 'dim3'], 23, { glow: ['glow1', 'glow2', 'glow3', 'glow4'] }),
+  stoneDark: caveDark(['dark1', 'dark2', 'dark3'], 24, { floor: [STONE, 0.72] }),
+  deepDark: caveDark(['dark1', 'dark2', 'dark3'], 24, { floor: [DEEP, 0.65] }),
+  lavaDark: caveDark(['dark1', 'dark2', 'dark3'], 24, { glow: ['glow2', 'glow3', 'glow4'] }),
+  lavaFall: lavaFall(4),
+  lavaTrickle: lavaFall(2),
+  lavaPool: lavaPool(10),
+  lavaPuddle: lavaPool(6),
+  // Six rows: a one-line message box hides it whole.
+  sun: spr(['oooooo', 'oyyyyo', 'oyyyyo', 'oyyyyo', 'oyyyyo', 'oooooo'], { o: 'sunO', y: 'sunY' }),
   cloud: spr(['....WWWWWWWW......', 'WWWWWWWWWWWWWWWWWW', 'GGGGGGGGGGGGGGGGGG'], { W: 'cloudW', G: 'cloudG' }),
   cloudSmall: spr(['..WWWWWW..', 'WWWWWWWWWW', 'GGGGGGGGGG'], { W: 'cloudW', G: 'cloudG' }),
+  // Scenery past the action, from the right edge in. Nine wide: from 56 columns on the oak is clear of column 45.
   oak: spr(
     [
-      '...vvvvvvvv...',
-      '..vVvvvvXvvv..',
-      '.vvvvXvvvvVvv.',
-      'vvVvvvvvvvvvvv',
-      'vvvvvvVvvXvvvv',
-      'vXvvvvvvvvvVvv',
-      'vvvvVvvvXvvvvv',
-      '.vvvvvvvvvvvv.',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
-      '......bB......',
+      '..vvvvv..',
+      '.vVvvXvv.',
+      'vvvXvvvVv',
+      'vVvvvvvvv',
+      'vvvVvvXvv',
+      'vXvvvvvVv',
+      '.vvvvvvv.',
+      ...Array<string>(13).fill('....bB...'),
     ],
     { v: 'leaf1', V: 'leaf2', X: 'leaf3', b: 'barkD', B: 'bark' },
   ),
+  birch: spr(
+    ['..llll..', '.lLlllL.', 'llllLlll', 'lLllllLl', 'llLlllll', '.llllLl.', ...Array.from({ length: 10 }, (_, k) => ['...wk...', '...ww...', '...kw...', '...ww...'][k % 4]!)],
+    { l: 'birchL', L: 'leaf1', w: 'pillow', k: 'tool' },
+  ),
+  flowers: spr(['.r...y.', 'rkr.yoy', '.g...g.', '.g...g.'], { r: 'redO', k: 'coal', y: 'goldO', o: 'sunO', g: 'grass3' }),
+  stalagmite: spr(['..a..', '..a..', '.aA..', '.aAb.', '.aAb.', 'aaAb.', 'aAAbb', 'aAAAb'], { a: 'stone1', A: 'stone2', b: 'stone3' }),
+  veinIron: spr(['..oO...', '.oOo.o.', 'oO..oOo', '.o.oOo.', '..oO...', '...o...'], { o: 'ironO', O: 'ironOD' }),
+  veinDiamond: spr(['..oO...', '.oOo.o.', 'oO..oOo', '.o.oOo.', '..oO...', '...o...'], { o: 'diaO', O: 'diaOD' }),
+  chest: spr(['kkkkkkkk', 'kPPPPPPk', 'kppppppk', 'kkkLLkkk', 'kPPLLPPk', 'kppppppk', 'kkkkkkkk'], { k: 'logD', P: 'plankL', p: 'plank', L: 'ironL' }),
+  rails: spr(['rrrrrrrrrrrrrrrr', 't..t..t..t..t..t'], { r: 'cobble1', t: 'plankD' }),
+  minecart: spr(['r.......r', 'rAAAAAAAr', 'raaaaaaar', '.raaaaar.', '..o...o..'], { r: 'stone1', A: 'anvilL', a: 'anvil', o: 'cobble1' }),
   drip: spr(['mmm', 'mMm', '.m.', '.m.', '.M.'], { m: 'dirt3', M: 'dirt2' }),
   wallTorch: spr(['.y.', 'yoy', '.O.', '.w.', '.w.', '.w.'], { y: 'flame', o: 'flameO', O: 'flameW', w: 'w' }),
   // Props
@@ -533,6 +620,10 @@ const sprites: Theme['sprites'] = {
   }),
   torchA: spr(['.y.', 'yoy', '.O.', '.w.', '.w.', '.w.', '.w.', '.w.'], { y: 'flame', o: 'flameO', O: 'flameW', w: 'w' }),
   torchB: spr(['y..', '.oy', '.O.', '.w.', '.w.', '.w.', '.w.', '.w.'], { y: 'flame', o: 'flameO', O: 'flameW', w: 'w' }),
+  // Burning low, and out: an ember at the tip and a wisp of smoke.
+  torchLow: spr(['...', '.y.', '.o.', '.w.', '.w.', '.w.', '.w.', '.w.'], { y: 'flame', o: 'flameO', w: 'w' }),
+  torchOutA: spr(['.s.', 's..', '.e.', '.w.', '.w.', '.w.', '.w.', '.w.'], { s: 'smoke3', e: 'redOD', w: 'w' }),
+  torchOutB: spr(['s..', '.s.', '.e.', '.w.', '.w.', '.w.', '.w.', '.w.'], { s: 'smoke3', e: 'redOD', w: 'w' }),
   grid: paint(13, 13, (x, y) => (x % 4 === 0 || y % 4 === 0 ? 'gridF' : x % 4 === 1 && y % 4 === 1 ? 'gridD' : 'gridS')),
   slotPlank: spr(['ppp', 'PPP', 'ppp'], { p: 'plank', P: 'plankD' }),
   slotStick: spr(['..w', '.w.', 'w..'], { w: 'w' }),
@@ -544,14 +635,14 @@ const sprites: Theme['sprites'] = {
     g: 'book3',
     y: 'book4',
   }),
-  enchTable: spr(['DcccccD.', 'oCCCCCCo', 'oooooooo', 'oOooooOo', 'oooooooo', 'oooOoooo'], {
+  enchTable: spr(['DccccccD', 'oCCCCCCo', 'oooooooo', 'oOooooOo', 'oooooooo', 'oooOoooo'], {
     D: 'diaL',
     c: 'cloth',
     C: 'clothD',
     o: 'obsid',
     O: 'obsidL',
   }),
-  bookOpen: spr(['pp..pp', 'pPpPpp', 'cccccc'], { p: 'page', P: 'ink', c: 'cover' }),
+  bookOpen: spr(['pp..pp', 'spppps', 'cccccc'], { p: 'page', s: 'pageS', c: 'cover' }),
   bookShut: spr(['......', '.cccc.', '.pppp.'], { p: 'page', c: 'cover' }),
   runeA: spr(['r.r', '.r.', 'rr.'], { r: 'rune' }),
   runeB: spr(['.r.', 'r.r', '.rr'], { r: 'rune' }),
@@ -570,8 +661,9 @@ const sprites: Theme['sprites'] = {
   diamond: spr(DIAMOND_ICON, { c: 'diaS', C: 'diaL', W: 'W', k: 'diaD' }),
   orbA: spr(['.y.', 'yGy', '.y.'], { y: 'orbG', G: 'orbY' }),
   orbB: spr(['.g.', 'gyg', '.g.'], { g: 'orbD', y: 'orbG' }),
-  lever0: spr(['k....', '.w...', '..w..', '.ccc.', 'cCcCc'], { k: 'dust', w: 'w', c: 'cobble1', C: 'cobble2' }),
-  lever1: spr(['....k', '...w.', '..w..', '.ccc.', 'cCcCc'], { k: 'dustOn', w: 'w', c: 'cobble1', C: 'cobble2' }),
+  // The lever stands as high as the miner's hand.
+  lever0: spr(['k....', 'kw...', '.w...', '..w..', '..w..', '.ccc.', 'cCcCc', 'CcccC'], { k: 'dust', w: 'w', c: 'cobble1', C: 'cobble2' }),
+  lever1: spr(['....k', '...wk', '...w.', '..w..', '..w..', '.ccc.', 'cCcCc', 'CcccC'], { k: 'dustOn', w: 'w', c: 'cobble1', C: 'cobble2' }),
   lampOff: spr(['kkkkkkkk', 'kLLlLLlk', 'kLlLLlLk', 'klLLLLlk', 'kLLlLLlk', 'kLlLLlLk', 'klLLlLLk', 'kkkkkkkk'], {
     k: 'lampK',
     L: 'lampL',
@@ -582,8 +674,8 @@ const sprites: Theme['sprites'] = {
     L: 'lampOnL',
     l: 'lampOnl',
   }),
-  dustOff: spr(['r.rr', 'rrr.'], { r: 'dust' }),
-  dustLit: spr(['r.rr', 'rrr.'], { r: 'dustOn' }),
+  dustOff: spr(['r.r', 'rrr'], { r: 'dust' }),
+  dustLit: spr(['r.r', 'rrr'], { r: 'dustOn' }),
   anvil: spr(['AAAAAAAAAA', '.aAAAAAAa.', '...aAAa...', '...aAAa...', '..AAAAAA..', '.dddddddd.'], { A: 'anvilL', a: 'anvil', d: 'anvilD' }),
   bedBase: spr(['PPPPPPPPdqqqqqqqqqqqq', 'wwwwwwwwwwwwwwwwwwwww', 'ww.................ww', 'WW.................WW'], {
     P: 'pillow',
@@ -592,8 +684,9 @@ const sprites: Theme['sprites'] = {
     w: 'plank',
     W: 'plankD',
   }),
-  quilt: paint(13, 13, (x, y) => (x === 0 ? 'pillow' : y === 0 ? 'quiltL' : y === 12 ? 'quiltD' : (x + y * 3) % 7 === 0 ? 'quiltL' : 'quilt')),
-  pieceHelm: { rows: ['.AAAAAA.', 'AAAEAAAA', 'Aa....aA', 'a......a'] },
+  // A pixel lower than the sleeper's head, turned down at the chin, rounded at the foot.
+  quilt: paint(13, 10, (x, y) => (x === 12 && y === 0 ? null : x === 0 ? 'pillow' : y === 0 ? 'quiltL' : x === 12 || y === 9 ? 'quiltD' : (x + y * 3) % 7 === 0 ? 'quiltL' : 'quilt')),
+  pieceHelm: { rows: ['.AAAAAA.', 'AAAeAAAA', 'Aa....aA', 'a......a'] },
   pieceChest: { rows: ['CC....CC', 'CCcCCcCC', '.CCEECC.', '.CCCCCC.', '.cccccc.'] },
   creeper: spr(
     [
@@ -629,12 +722,14 @@ const sprites: Theme['sprites'] = {
     R: 'collar',
     k: 'creepK',
   }),
-  bone: spr(['b..b', 'bbbb', 'b..b'], { b: 'boneW' }),
+  // Sitting, facing left: narrow enough for one each side of the miner.
+  wolfSit: spr(['.W.W...', '.WWW...', 'WWkW...', 'kWWWW..', '..RRWW.', '..WWWWW', '..gWWWW', '..W.WWg'], { W: 'wolf', g: 'wolfS', R: 'collar', k: 'creepK' }),
+  bone: spr(['b..b', 'bbbb', 'b..b'], { b: 'boneY' }),
   love: spr(['h.h', 'hhh', '.h.'], { h: 'love' }),
-  sweat: spr(['.O.', 'OOO', '.O.'], { O: 'sweat' }),
+  sweat: spr(['.O.', '.O.', 'OOO', 'OOs', '.s.'], { O: 'sweat', s: 'sweatS' }),
   sparkA: spr(['.g.', 'gWg', '.g.'], { g: 'glint', W: 'W' }),
   sparkB: spr(['g.g', '.G.', 'g.g'], { g: 'glint2', G: 'glint' }),
-  toast,
+  toast: toastPanel,
   borderWall,
 }
 
@@ -645,34 +740,36 @@ sprites.lie = rotate(sprites.sleep!, 'ccw')
 // Frames: actors relative to the miner's top-left; the floor is at y 16.
 // ---------------------------------------------------------------------------
 
+const SMALL: HeroTier[] = ['tier1', 'tier2', 'unknown']
 const GRAND: HeroTier[] = ['tier3', 'tier4']
 /** How far the champion's props over the head move up (`heroForms.lift`). */
 const LIFT = 4
 
 /** Scenery above the miner's head that stays put for every tier. */
 const fixed = (sprite: string, x: number, y: number, swap?: Record<string, string>): Actor => at(sprite, x, y, { swap, fixed: true })
-/** The enchantment glint shimmering over the champion's armor. */
+/** The enchantment glint shimmering over the champion's armor: helm and chest, chest and leg. Placed on his own sprite, so nothing lifts it. */
 const glint = (k: number): Actor[] =>
   [
     [
-      [2, 1],
+      [6, -3],
       [10, 9],
     ],
     [
-      [12, 2],
+      [11, 6],
       [4, 11],
     ],
     [
       [7, 6],
-      [14, 12],
+      [9, 12],
     ],
-  ][k % 3]!.map(([x, y], i) => ({ sprite: i ? 'sparkB' : 'sparkA', x: x!, y: y!, tiers: GRAND }))
+  ][k % 3]!.map(([x, y], i) => ({ sprite: i ? 'sparkB' : 'sparkA', x: x!, y: y!, tiers: GRAND, fixed: true }))
 
-/** The pickaxe raised over the block, and down on it. */
+/** The pickaxe raised over the block, and down on it: the head ends on the floor line. */
 const windup = () => weapon(14, 1)
-const strike = () => weapon(14, 9, { flipY: true })
+const strike = () => weapon(14, 7, { flipY: true })
 
-const P = 18 // a prop on the floor, right of the miner
+const P = 18 // a prop on the floor, right of the miner (scene columns 30..37)
+const Q = 26 // a second one beside it (38..45)
 const BY = 8 // the top of a block on the floor
 const table = () => at('craftTable', P, BY)
 const torch = (lit: 0 | 1) => at(lit ? 'torchB' : 'torchA', P + 2, 0)
@@ -693,32 +790,84 @@ const craft = (n: number, shuffle = false): Actor[] => [
   ...RECIPE.slice(0, n).map(([s, i, j], k) => fixed(s, GX + 1 + 4 * (shuffle && k === 4 ? 2 : i), GY + 1 + 4 * j)),
 ]
 
-// Shell: a lever by a redstone lamp, dust to a second lamp.
+const Z = '#ffffff'
+
+// Shell: a lever, redstone dust, and two lamps one on the other, lit from the bottom.
 const redstone = (lever: 0 | 1, lit: 0 | 1 | 2): Actor[] => [
-  at(lever ? 'lever1' : 'lever0', 16, 11),
-  at(lit ? 'lampOn' : 'lampOff', 21, BY),
-  at(lit === 2 ? 'dustLit' : 'dustOff', 29, 14),
-  at(lit === 2 ? 'lampOn' : 'lampOff', 33, BY),
+  at(lever ? 'lever1' : 'lever0', P, 8),
+  at(lever ? 'dustLit' : 'dustOff', P + 5, 14),
+  at(lit ? 'lampOn' : 'lampOff', Q, BY),
+  at(lit === 2 ? 'lampOn' : 'lampOff', Q, 0),
 ]
 
 // Reading: the enchanting table, its book, runes drifting in from the shelf.
+const RUNES = [
+  [
+    [28, 4],
+    [25, 1],
+  ],
+  [
+    [25, 2],
+    [22, 4],
+  ],
+  [
+    [22, 1],
+    [28, 2],
+  ],
+]
 const enchant = (open: boolean, k: number): Actor[] => [
-  at('bookshelf', 29, BY),
+  at('bookshelf', Q, BY),
   at('enchTable', P, 10),
   at(open ? 'bookOpen' : 'bookShut', P + 1, 6),
-  at(k % 2 ? 'runeA' : 'runeB', 27 - (k % 3) * 3, 3 + (k % 2) * 2),
-  at(k % 2 ? 'runeB' : 'runeA', 24 - (k % 3) * 2, 1 + (k % 3)),
+  ...RUNES[k % 3]!.map(([x, y], i) => at((k + i) % 2 ? 'runeA' : 'runeB', x!, y!)),
 ]
 
-// Bed: the frame and pillow under the sleeper, the quilt over the body.
-const inBed = (): Actor[] => [at('bedBase', -1, 12), hero('lie', 0, -4), at('quilt', 7, -1)]
-const night = () => fixed('nightSky', -12, -18)
+// Bed: the frame and pillow under the sleeper, the quilt over the body. The champion lies where the small miner does.
+const inBed = (): Actor[] => [at('bedBase', -1, 12), { ...hero('lie', 0, -4), tiers: SMALL }, { ...hero('lie', 2, -4), tiers: GRAND }, at('quilt', 7, 2)]
+// Dark and half-dark behind everything, the cache ring included, whatever the scene's width and height.
+// Above ground (under 25% of the context) they are the night sky and the sunset; in the caves the torch
+// gutters and goes out, and the rock goes dark.
+const SURFACE = 25
+const DEEP_AT = 50
+const LAVA = 75
+const layer = (sprite: string, minPercent: number, maxPercent?: number): Actor => ({ sprite, x: -12, y: 16 - SKY_H, fixed: true, backdrop: true, minPercent, maxPercent })
+const night = (): Actor[] => [layer('nightSky', 0, SURFACE), layer('stoneDark', SURFACE, DEEP_AT), layer('deepDark', DEEP_AT, LAVA), layer('lavaDark', LAVA)]
+const dusk = (): Actor[] => [layer('duskSky', 0, SURFACE), layer('stoneDim', SURFACE, DEEP_AT), layer('deepDim', DEEP_AT, LAVA), layer('lavaDim', LAVA)]
+const above = (a: Actor): Actor => ({ ...a, maxPercent: SURFACE })
+const below = (a: Actor): Actor => ({ ...a, minPercent: SURFACE })
+/** The torch on the crafting table underground, where it is the only light. */
+const caveTorch = (sprite: string) => below(at(sprite, P + 2, 0))
+/** And the one stuck in the ground by the foot of the bed. */
+const bedTorch = (sprite: string) => below(at(sprite, 22, 8))
+const smoke = (k: number) => (k % 2 ? 'torchOutB' : 'torchOutA')
 
-const Z = '#ffffff'
 const zzz = (k: number) => [{ text: k % 2 ? 'Z' : 'z', x: 2 + k, y: -6 - 2 * k, color: Z }]
 
-const HURT = { A: 'hurt', a: 'hurtD', C: 'hurt', c: 'hurtD', L: 'hurt', l: 'hurtD', B: 'hurtD', b: 'hurtD', S: 'hurtL', s: 'hurt', E: 'hurt', T: 'hurtD', H: 'hurtD' }
-const BARE = { A: 'hair', a: 'hairS', C: 'shirt', c: 'shirtS', L: 'pants', l: 'pantsS', B: 'shoe', b: 'shoeS', E: 'shirt', T: 'hairS' }
+const HURT = { A: 'hurt', a: 'hurtD', C: 'hurt', c: 'hurtD', L: 'hurt', l: 'hurtD', B: 'hurtD', b: 'hurtD', S: 'hurtL', s: 'hurt', E: 'hurt', e: 'hurt', T: 'hurtD', H: 'hurtD' }
+// Out of armor. `clear` is no color at all: the champion's cape is not drawn.
+const BARE = { A: 'hair', a: 'hairS', C: 'shirt', c: 'shirtS', L: 'pants', l: 'pantsS', B: 'shoe', b: 'shoeS', E: 'shirt', e: 'hair', T: 'hairS', R: 'clear', r: 'clear' }
+
+// Two wolves sit either side of the miner, run off past the edge of the widest pane, and come back with a bone each.
+const WOLF_L = -10
+const WOLF_R = 19
+const RUN = [22, 38, 54, 70]
+const wolvesSit = (): Actor[] => [at('wolfSit', WOLF_L, 8, { flip: true }), at('wolfSit', WOLF_R, 8)]
+const running = (k: number) => (k % 2 ? 'wolf' : 'wolfRun')
+const wolvesOut = (k: number): Actor[] => [...(k === 0 ? [at('wolfRun', -19, 8, { flip: true, offstage: true })] : []), at(running(k), RUN[k]!, 8, { offstage: true })]
+// A bone sticks out of the mouth by three pixels.
+const wolvesBack = (k: number): Actor[] => [
+  ...(k === 0 ? [at('wolfRun', -19, 8, { offstage: true }), at('bone', -7, 10)] : []),
+  at(running(k), RUN[k]!, 8, { flip: true, offstage: true }),
+  at('bone', RUN[k]! - 3, 10, { offstage: true }),
+]
+// The miner holds the two bones up, one over each fist.
+const bones = (): Actor[] => [
+  { ...at('bone', -1, -3, { fixed: true }), tiers: SMALL },
+  { ...at('bone', 13, -3, { fixed: true }), tiers: SMALL },
+  { ...at('bone', -2, -7, { fixed: true }), tiers: GRAND },
+  { ...at('bone', 15, -7, { fixed: true }), tiers: GRAND },
+]
+const waiting = (dots: string): SceneText[] => [{ text: dots, x: 9, y: -2, color: Z, lift: true }]
 
 const states: Theme['states'] = {
   idle: loop(
@@ -730,14 +879,14 @@ const states: Theme['states'] = {
     { actors: [table(), torch(1), hero('stand'), ...glint(0)], hold: 2 },
   ),
   thinking: loop(
-    { actors: [table(), hero('stand'), ...craft(0)], texts: [{ text: '.', x: 9, y: -6, color: Z }], hold: 2 },
-    { actors: [table(), hero('attack'), ...craft(1)], texts: [{ text: '..', x: 9, y: -6, color: Z }], hold: 1 },
-    { actors: [table(), hero('attack'), ...craft(2)], texts: [{ text: '...', x: 9, y: -6, color: Z }], hold: 1 },
+    { actors: [table(), hero('stand'), ...craft(0)], texts: waiting('.'), hold: 2 },
+    { actors: [table(), hero('attack'), ...craft(1)], texts: waiting('..'), hold: 1 },
+    { actors: [table(), hero('attack'), ...craft(2)], texts: waiting('...'), hold: 1 },
     { actors: [table(), hero('attack'), ...craft(3)], hold: 1 },
     { actors: [table(), hero('attack'), ...craft(4)], hold: 1 },
-    { actors: [table(), hero('stand'), ...craft(5, true), ...glint(1)], texts: [{ text: '?', x: 10, y: -6, color: Z }], hold: 2 },
+    { actors: [table(), hero('stand'), ...craft(5, true), ...glint(1)], texts: [{ text: '?', x: 10, y: -2, color: Z, lift: true }], hold: 2 },
     { actors: [table(), hero('attack'), ...craft(5)], hold: 1 },
-    { actors: [table(), hero('stand'), ...craft(5), ...glint(2)], texts: [{ text: '!', x: 10, y: -6, color: Z }], hold: 2 },
+    { actors: [table(), hero('stand'), ...craft(5), ...glint(2)], texts: [{ text: '!', x: 10, y: -2, color: Z, lift: true }], hold: 2 },
   ),
   reading: loop(
     { actors: [...enchant(true, 0), hero('stand'), ...glint(0)], hold: 2 },
@@ -767,47 +916,67 @@ const states: Theme['states'] = {
     { actors: [...redstone(0, 0), hero('stand')], hold: 1 },
   ),
   agents: loop(
-    { actors: [at('wolf', -13, 8, { flip: true }), at('wolf', 17, 8), hero('itemGet'), ...glint(0)], hold: 2 },
-    { actors: [at('wolfRun', -17, 8, { flip: true }), at('wolfRun', 22, 8), hero('stand')], hold: 1 },
-    { actors: [at('wolf', -22, 8, { flip: true }), at('wolf', 30, 8), hero('stand')], hold: 1 },
-    { actors: [at('wolfRun', -28, 8, { flip: true }), at('wolfRun', 40, 8), hero('stand')], hold: 1 },
-    { actors: [hero('stand'), ...glint(1)], texts: [{ text: '...', x: 9, y: -6, color: Z }], hold: 3 },
-    { actors: [at('wolfRun', -22, 8), at('bone', -9, 11), at('wolfRun', 30, 8, { flip: true }), at('bone', 28, 11), hero('stand')], hold: 1 },
-    { actors: [at('wolf', -14, 8), at('bone', -1, 11), at('wolf', 19, 8, { flip: true }), at('bone', 17, 11), hero('stand')], hold: 1 },
-    { actors: [at('wolf', -13, 8), at('wolf', 17, 8, { flip: true }), at('love', -7, 4), at('love', 23, 3), hero('itemGet'), ...glint(2)], hold: 3 },
+    { actors: [...wolvesSit(), hero('itemGet'), ...glint(0)], hold: 2 },
+    { actors: [...wolvesOut(0), hero('stand')], hold: 1 },
+    { actors: [...wolvesOut(1), hero('stand')], texts: waiting('.'), hold: 1 },
+    { actors: [...wolvesOut(2), hero('stand')], texts: waiting('..'), hold: 1 },
+    { actors: [...wolvesOut(3), hero('stand')], texts: waiting('...'), hold: 1 },
+    { actors: [hero('stand'), ...glint(1)], texts: waiting('...'), hold: 2 },
+    { actors: [...wolvesBack(3), hero('stand')], texts: waiting('...'), hold: 1 },
+    { actors: [...wolvesBack(2), hero('stand')], texts: waiting('...'), hold: 1 },
+    { actors: [...wolvesBack(1), hero('stand')], texts: waiting('...'), hold: 1 },
+    { actors: [...wolvesBack(0), hero('stand')], hold: 1 },
+    { actors: [...wolvesSit(), ...bones(), at('love', WOLF_L + 2, 4), at('love', WOLF_R + 2, 4), hero('itemGet'), ...glint(2)], hold: 3 },
   ),
 }
 
 const cold: Theme['cold'] = {
   idle: loop(
-    { actors: [night(), ...inBed()], texts: zzz(0), hold: 3 },
-    { actors: [night(), ...inBed()], texts: zzz(1), hold: 3 },
-    { actors: [night(), ...inBed()], texts: zzz(2), hold: 3 },
-    { actors: [night(), ...inBed()], hold: 3 },
+    { actors: [...night(), ...inBed(), bedTorch(smoke(0))], texts: zzz(0), hold: 3 },
+    { actors: [...night(), ...inBed(), bedTorch(smoke(1))], texts: zzz(1), hold: 3 },
+    { actors: [...night(), ...inBed(), bedTorch(smoke(0))], texts: zzz(2), hold: 3 },
+    { actors: [...night(), ...inBed(), bedTorch(smoke(1))], hold: 3 },
   ),
 }
 
-const SIGH = 'Full enchants to dig dirt? Overqualified.'
-const sweat = at('sweat', 14, -1)
-const sigh = [{ text: '~sigh~', x: 17, y: -6, color: Z }]
+const SIGH = 'Overqualified for this.'
+// A drop behind the brow, clear of the pickaxe and of the price tag.
+const sweat: Actor[] = [
+  { ...at('sweat', -1, 2), tiers: SMALL },
+  { ...at('sweat', -1, -2, { fixed: true }), tiers: GRAND },
+]
+const sigh = [{ text: '~sigh~', x: 17, y: -2, color: Z, lift: true }]
 const overkill: Theme['overkill'] = {
   reading: loop(
-    { actors: [at('dirtBlock', P, BY), hero('stand'), sweat], hold: 2, caption: SIGH },
-    { actors: [at('dirtBlock', P, BY), hero('attack'), windup(), sweat], hold: 1, caption: SIGH },
-    { actors: [at('dirtBlock', P, BY), at('crack3', P, BY), hero('attack'), strike(), sweat], hold: 1, caption: SIGH },
-    { actors: [hero('stand'), sweat], texts: sigh, hold: 3, caption: SIGH },
+    { actors: [at('dirtBlock', P, BY), hero('stand'), ...sweat], hold: 2, caption: SIGH },
+    { actors: [at('dirtBlock', P, BY), hero('attack'), windup(), ...sweat], hold: 1, caption: SIGH },
+    { actors: [at('dirtBlock', P, BY), at('crack3', P, BY), hero('attack'), strike(), ...sweat], hold: 1, caption: SIGH },
+    { actors: [hero('stand'), ...sweat], texts: sigh, hold: 3, caption: SIGH },
   ),
   shell: loop(
-    { actors: [...redstone(0, 0), hero('stand'), sweat], hold: 2, caption: SIGH },
-    { actors: [...redstone(1, 1), hero('attack'), sweat], hold: 2, caption: SIGH },
-    { actors: [...redstone(1, 2), hero('stand'), sweat], texts: sigh, hold: 3, caption: SIGH },
+    { actors: [...redstone(0, 0), hero('stand'), ...sweat], hold: 2, caption: SIGH },
+    { actors: [...redstone(1, 1), hero('attack'), ...sweat], hold: 2, caption: SIGH },
+    { actors: [...redstone(1, 2), hero('stand'), ...sweat], texts: sigh, hold: 3, caption: SIGH },
   ),
 }
 
 const TOAST: SceneText[] = [
-  { text: 'Advancement Made!', x: 8, y: -16, color: '#ffff55' },
-  { text: 'Diamonds!', x: 8, y: -14, color: '#ffffff' },
+  { text: 'Advancement Made!', x: 9, y: -16, color: '#ffff55' },
+  { text: 'Diamonds!', x: 9, y: -14, color: '#ffffff' },
 ]
+const toast = () => fixed('toast', 0, -18)
+
+// The armor pieces on their way to the miner: beside him, then half way. The champion's head is higher.
+const ARMORED: HeroTier[] = ['tier1', 'tier2']
+const pieces = (step: 0 | 1): Actor[] => [
+  { sprite: 'pieceHelm', x: step ? 11 : 19, y: step ? 0 : 1, tier: true, tiers: ARMORED },
+  { sprite: 'pieceChest', x: step ? 11 : 19, y: 7, tier: true, tiers: ARMORED },
+  { sprite: 'pieceHelm', x: step ? 12 : 21, y: step ? -4 : -3, tier: true, tiers: GRAND, fixed: true },
+  { sprite: 'pieceChest', x: step ? 12 : 21, y: step ? 5 : 6, tier: true, tiers: GRAND },
+]
+
+const stone = () => at('stoneBlock', P, BY)
+const MILESTONE = 'milestone'
 
 const events: Theme['events'] = {
   toolSuccess: once(
@@ -815,51 +984,65 @@ const events: Theme['events'] = {
     { actors: [at('diamondOre', P, BY), at('crack2', P, BY), hero('attack'), strike()], hold: 1 },
     { actors: [at('debris', P, 9), at('diamond', P + 1, 11), hero('stand')], hold: 1 },
     { actors: [at('diamond', P, 9), at('orbA', 22, 4), at('orbB', 17, 1), hero('stand')], hold: 1 },
-    { actors: [at('orbB', 15, 5), at('orbA', 12, 2), hero('stand')], texts: [{ text: '+XP', x: 17, y: -6, color: '#a8ff3a' }], hold: 1 },
+    { actors: [at('orbB', 15, 5), at('orbA', 12, 2), hero('stand')], texts: [{ text: '+XP', x: 17, y: -2, color: '#a8ff3a', lift: true }], hold: 1 },
   ),
+  // The creeper comes up from the right; the blast knocks the miner back two pixels and he steps up again.
   toolError: once(
-    { actors: [at('creeper', 32, 1), hero('stand')], hold: 1 },
-    { actors: [at('creeper', 25, 1), hero('stand')], hold: 1 },
-    { actors: [at('creeper', 20, 1), hero('stand')], texts: [{ text: 'sss', x: 21, y: -6, color: '#8fd87a' }], hold: 1 },
+    { actors: [at('creeper', Q, 1), hero('stand')], hold: 1 },
+    { actors: [at('creeper', 23, 1), hero('stand')], hold: 1 },
+    { actors: [at('creeper', 20, 1), hero('stand')], texts: [{ text: 'sss', x: 21, y: -2, color: '#8fd87a' }], hold: 1 },
     {
       actors: [at('creeper', 20, 1, { swap: { creep1: 'W', creep2: 'smoke2', creep3: 'W' } }), hero('stand')],
-      texts: [{ text: 'SSSS', x: 20, y: -6, color: '#ffffff' }],
+      texts: [{ text: 'SSSS', x: 20, y: -2, color: '#ffffff' }],
       hold: 1,
     },
-    { actors: [at('boom1', 17, 2), hero('stand', -2, 0, HURT)], hold: 1 },
-    { actors: [at('boom2', 15, 0), hero('stand', -4, 0, { ...HURT, A: 'hurtL', C: 'hurtL' })], hold: 1 },
-    { actors: [at('boom1', 18, 4, { swap: { boomO: 'smoke3', smoke1: 'smoke2' } }), hero('stand', -4, 0, HURT)], hold: 1 },
-    { actors: [hero('stand', -2, 0)], hold: 1 },
+    { actors: [at('boom1', 17, 2), hero('stand', -1, 0, HURT)], hold: 1 },
+    { actors: [at('boom2', 15, 0), hero('stand', -2, 0, { ...HURT, A: 'hurtL', C: 'hurtL' })], hold: 1 },
+    { actors: [at('boom1', 18, 4, { swap: { boomO: 'smoke3', smoke1: 'smoke2' } }), hero('stand', -2, 0, HURT)], hold: 1 },
+    { actors: [hero('stand', -1, 0)], hold: 1 },
+    { actors: [hero('stand')], hold: 1 },
   ),
   turnComplete: once(
-    { actors: [fixed('toast', -1, -24), hero('itemGet'), at('diamond', 5, -6)], hold: 1 },
-    { actors: [fixed('toast', -1, -18), hero('itemGet'), at('diamond', 5, -6), ...glint(0)], texts: TOAST, hold: 4 },
-    { actors: [fixed('toast', -1, -18), hero('stand'), ...glint(1)], texts: TOAST, hold: 6 },
+    { actors: [hero('itemGet'), at('diamond', 5, -6)], hold: 1 },
+    { actors: [toast(), hero('itemGet'), at('diamond', 5, -6), ...glint(0)], texts: TOAST, hold: 4 },
+    { actors: [toast(), hero('stand'), ...glint(1)], texts: TOAST, hold: 6 },
   ),
-  milestone: once({ actors: [table(), torch(0), hero('stand')], message: 'milestone', hold: 18 }),
+  // He digs a block out from under the message, then waits by the torch.
+  milestone: once(
+    { actors: [stone(), hero('stand')], message: MILESTONE, hold: 2 },
+    { actors: [stone(), hero('attack'), windup()], message: MILESTONE, hold: 1 },
+    { actors: [stone(), at('crack1', P, BY), hero('attack'), strike()], message: MILESTONE, hold: 1 },
+    { actors: [stone(), at('crack1', P, BY), hero('attack'), windup()], message: MILESTONE, hold: 1 },
+    { actors: [stone(), at('crack3', P, BY), hero('attack'), strike()], message: MILESTONE, hold: 1 },
+    { actors: [at('debris', P, 9), hero('stand')], message: MILESTONE, hold: 2 },
+    { actors: [table(), torch(0), hero('stand'), ...glint(0)], message: MILESTONE, hold: 5 },
+    { actors: [table(), torch(1), hero('stand'), ...glint(1)], message: MILESTONE, hold: 5 },
+  ),
+  // Sunset, night, bed. Underground: the torch burns low, goes out, and he turns in beside another dead one.
   cacheCold: once(
-    { actors: [fixed('sun', 26, -6, { sunY: 'sunset', sunO: 'sunsetD' }), table(), hero('stand')], hold: 2 },
-    { actors: [night(), table(), hero('sleep')], hold: 2 },
-    { actors: [night(), ...inBed()], message: 'cacheCold', hold: 12 },
+    { actors: [...dusk(), table(), above(torch(0)), caveTorch('torchLow'), hero('stand')], message: 'cacheCold', hold: 2 },
+    { actors: [...night(), table(), above(torch(1)), caveTorch(smoke(0)), hero('sleep')], message: 'cacheCold', hold: 2 },
+    { actors: [...night(), ...inBed(), bedTorch(smoke(1))], message: 'cacheCold', hold: 12 },
   ),
+  // The wall comes in from the right until it presses on him.
   limitWarning: once(
-    { actors: [fixed('borderWall', 36, -18), hero('stand')], message: 'limitWarning', hold: 3 },
-    { actors: [fixed('borderWall', 30, -18), hero('walk', -1, 0)], message: 'limitWarning', hold: 3 },
-    { actors: [fixed('borderWall', 24, -18), hero('stand', -2, 0, { C: 'hurt', c: 'hurtD' })], message: 'limitWarning', hold: 9 },
+    { actors: [fixed('borderWall', 28, -14), hero('stand')], message: 'limitWarning', hold: 3 },
+    { actors: [fixed('borderWall', 21, -14), hero('walk', -1, 0)], message: 'limitWarning', hold: 3 },
+    { actors: [fixed('borderWall', 15, -14), hero('stand', -2, 0, { C: 'hurt', c: 'hurtD' })], message: 'limitWarning', hold: 9 },
   ),
   compaction: once(
-    { actors: [night(), ...inBed()], texts: zzz(1), hold: 3, caption: 'compaction' },
-    { actors: [fixed('sun', 26, -2, { sunY: 'sunset', sunO: 'sunsetD' }), ...inBed()], hold: 2, caption: 'compaction' },
+    { actors: [...night(), ...inBed(), bedTorch(smoke(0))], texts: zzz(1), hold: 3, caption: 'compaction' },
+    { actors: [...dusk(), ...inBed(), bedTorch('torchLow')], hold: 2, caption: 'compaction' },
     {
-      actors: [fixed('sun', 26, -12), hero('itemGet'), ...glint(0)],
-      texts: [{ text: 'Saving world...', x: 0, y: -14, color: Z }],
+      actors: [hero('itemGet'), ...glint(0)],
+      texts: [{ text: 'Saving world...', x: 0, y: -12, color: Z }],
       hold: 3,
       caption: 'compaction',
     },
   ),
   modelChange: once(
-    { actors: [hero('stand', 0, 0, BARE), { sprite: 'pieceHelm', x: 18, y: 1, tier: true }, { sprite: 'pieceChest', x: 18, y: 7, tier: true }], hold: 2 },
-    { actors: [hero('stand', 0, 0, BARE), { sprite: 'pieceHelm', x: 10, y: 0, tier: true }, { sprite: 'pieceChest', x: 9, y: 7, tier: true }], hold: 1 },
+    { actors: [hero('stand', 0, 0, BARE), ...pieces(0)], hold: 2 },
+    { actors: [hero('stand', 0, 0, BARE), ...pieces(1)], hold: 1 },
     { actors: [at('boom2', -1, 1, { swap: { smoke2: 'glint', smoke3: 'glint2' } })], hold: 1 },
     { actors: [hero('itemGet'), at('sparkA', -2, 4), at('sparkB', 16, 6), ...glint(0)], hold: 3, caption: 'modelChange' },
     { actors: [hero('stand'), ...glint(1)], hold: 3, caption: 'modelChange' },
@@ -869,8 +1052,8 @@ const events: Theme['events'] = {
     { actors: [at('anvil', P, 10), hero('stand'), at('sparkB', P + 5, 5)], texts: [{ text: '*', x: 22, y: -2, color: '#ffff55' }], hold: 1 },
     { actors: [at('anvil', P, 10), hero('attack'), at('sparkA', P + 2, 5)], hold: 1 },
     {
-      actors: [at('anvil', P, 10), hero('itemGet'), weapon(13, -8), ...glint(0)],
-      texts: [{ text: '*', x: 23, y: -10, color: '#ffff55' }],
+      actors: [at('anvil', P, 10), hero('itemGet'), weapon(14, -9), ...glint(0)],
+      texts: [{ text: '*', x: 24, y: -4, color: '#ffff55' }],
       hold: 5,
       caption: 'effortChange',
     },
@@ -880,6 +1063,8 @@ const events: Theme['events'] = {
 const MINER_POSES = { stand: 'stand', walk: 'walk', attack: 'attack', itemGet: 'itemGet', sleep: 'sleep', lie: 'lie' }
 // Under the quilt the champion is just a miner in a bed: the small lying pose keeps the bed in scale.
 const CHAMPION_POSES = { stand: 'gStand', walk: 'gWalk', attack: 'gAttack', itemGet: 'gItemGet', sleep: 'gSleep', lie: 'lie' }
+// His fists are two pixels right of the small miner's, held and raised.
+const CHAMPION_FORM = { poses: CHAMPION_POSES, dx: -2, dy: -4, lift: LIFT, hand: { x: 2, y: -2 }, aloft: { x: 2, y: 0 } }
 const armor = (l: string, s: string, d: string, glintTo: string, trim: string, cape?: [string, string]) => ({
   A: l,
   a: s,
@@ -890,36 +1075,44 @@ const armor = (l: string, s: string, d: string, glintTo: string, trim: string, c
   B: s,
   b: d,
   E: glintTo,
+  e: glintTo,
   T: trim,
   ...(cape ? { R: cape[0], r: cape[1] } : {}),
 })
+
+/** A lava fall `x` from the right edge: hung from the ceiling and standing on the floor (the two overlap), with a pool at its foot. */
+const fall = (sprite: string, pool: string, x: number, poolX: number, minColumns: number) => [
+  { sprite, x, y: 4, sky: true, minPercent: 75, minColumns },
+  { sprite, x, y: 4, minPercent: 75, minColumns },
+  { sprite: pool, x: poolX, y: 34, minPercent: 75, minColumns },
+]
 
 export const minecraft: Theme = {
   id: 'minecraft',
   name: 'Tokencraft',
   description: 'Voxel survival homage: armor per model, a pickaxe per effort, hearts, hunger and emeralds, mining deeper as context fills',
-  version: '1.0.0',
+  version: '1.1.0',
   palette: {
     dark: { accent: '#55ff55', gold: '#ffff55', red: '#ff5555', label: '#55ffff', dim: '#aaaaaa', text: '#ffffff' },
-    light: { accent: '#00aa00', gold: '#a87800', red: '#aa0000', label: '#00807f', dim: '#555555', text: '#1e1e1e' },
+    light: { accent: '#007a00', gold: '#8a6200', red: '#aa0000', label: '#007574', dim: '#555555', text: '#1e1e1e' },
   },
   pixels,
   labels: {
     context: 'HEALTH',
     spend: 'EMERALDS',
     cache: 'HUNGER',
-    limits: 'WORLD BORDER',
+    limits: 'BORDER',
     modelItem: 'ARMOR',
     effortItem: 'PICKAXE',
     heroes: 'Armor',
     weapons: 'Pickaxes',
   },
   headings: {
-    Context: 'Depth',
+    Context: 'Health',
     Cost: 'Emeralds',
     'Next message': 'Hunger',
     Tokens: 'Blocks mined',
-    Limits: 'World border',
+    Limits: 'Border',
     'Tool calls': 'Statistics',
     Files: 'Chunks loaded',
   },
@@ -936,26 +1129,43 @@ export const minecraft: Theme = {
       gradient: ['#5a8cff', '#78a4ff', '#98bcff', '#b4d0ff'],
       deep: ['#0e0c12', '#18121c', '#24161a', '#4a1c0c', '#8a3410'],
       shade: { color: '#000000', amount: 0.3 },
+      // The backdrop changes at 25, 50 and 75% of the context. Past the action (columns 0..45) the
+      // scenery hangs from the right edge: one piece at 58 columns, more at 80, the rest at 96.
       decor: [
-        { sprite: 'sun', x: -5, y: 2, maxPercent: 25 },
-        { sprite: 'cloud', x: 22, y: 5, maxPercent: 25 },
-        { sprite: 'cloudSmall', x: -26, y: 11, maxPercent: 25, minColumns: 56 },
-        { sprite: 'oak', x: -2, y: 12, maxPercent: 25, minColumns: 56 },
+        { sprite: 'caveStone', x: 0, y: 0, sky: true, minPercent: 25, maxPercent: 50 },
+        { sprite: 'caveDeep', x: 0, y: 0, sky: true, minPercent: 50, maxPercent: 75 },
+        // Over the lava the rock ends 14 rows above the floor, at any height: one piece from the top, one riding on the floor.
+        { sprite: 'caveBrow', x: 0, y: 0, sky: true, minPercent: 75 },
+        { sprite: 'caveBrowTall', x: 0, y: -20, minPercent: 75 },
+        // Grass and sky
+        { sprite: 'sun', x: -5, y: 2, sky: true, maxPercent: 25 },
+        { sprite: 'oak', x: -1, y: 14, maxPercent: 25, minColumns: 56 },
+        { sprite: 'cloudSmall', x: -16, y: 10, sky: true, maxPercent: 25, minColumns: 78 },
+        { sprite: 'flowers', x: -14, y: 30, maxPercent: 25, minColumns: 78 },
+        { sprite: 'cloud', x: -30, y: 4, sky: true, maxPercent: 25, minColumns: 94 },
+        { sprite: 'birch', x: -34, y: 18, maxPercent: 25, minColumns: 94 },
         { sprite: 'floorGrass', x: 0, y: 34, maxPercent: 25 },
-        { sprite: 'ceilStone', x: 0, y: 0, minPercent: 25, maxPercent: 50 },
+        // Stone, then deepslate
+        { sprite: 'ceilStone', x: 0, y: 0, sky: true, minPercent: 25, maxPercent: 50 },
         { sprite: 'floorStone', x: 0, y: 34, minPercent: 25, maxPercent: 50 },
-        { sprite: 'wallTorch', x: -8, y: 18, minPercent: 25, maxPercent: 75, minColumns: 56 },
-        { sprite: 'ceilDeep', x: 0, y: 0, minPercent: 50 },
-        { sprite: 'drip', x: 44, y: 5, minPercent: 50 },
-        { sprite: 'drip', x: 24, y: 5, minPercent: 60 },
+        { sprite: 'ceilDeep', x: 0, y: 0, sky: true, minPercent: 50 },
+        { sprite: 'drip', x: 44, y: 5, sky: true, minPercent: 50 },
+        { sprite: 'drip', x: 29, y: 5, sky: true, minPercent: 60 },
         { sprite: 'floorDeep', x: 0, y: 34, minPercent: 50, maxPercent: 75 },
-        { sprite: 'lavaFall', x: -2, y: 5, minPercent: 75, minColumns: 56 },
+        { sprite: 'wallTorch', x: -4, y: 18, minPercent: 25, maxPercent: 75, minColumns: 56 },
+        { sprite: 'veinIron', x: -1, y: 9, minPercent: 25, maxPercent: 50, minColumns: 56 },
+        { sprite: 'veinDiamond', x: -1, y: 9, minPercent: 50, maxPercent: 75, minColumns: 56 },
+        { sprite: 'stalagmite', x: -14, y: 26, minPercent: 25, maxPercent: 75, minColumns: 78 },
+        { sprite: 'chest', x: -22, y: 27, minPercent: 25, maxPercent: 75, minColumns: 78 },
+        { sprite: 'rails', x: -30, y: 32, minPercent: 25, maxPercent: 75, minColumns: 94 },
+        { sprite: 'minecart', x: -34, y: 27, minPercent: 25, maxPercent: 75, minColumns: 94 },
+        // Lava over bedrock
         { sprite: 'floorLava', x: 0, y: 34, minPercent: 75 },
+        ...fall('lavaFall', 'lavaPool', -4, -1, 56),
+        ...fall('lavaTrickle', 'lavaPuddle', -20, -18, 78),
+        ...fall('lavaFall', 'lavaPool', -38, -35, 94),
       ],
-      particles: [
-        { colors: ['#b0b0b0', '#8a8a8a'], count: 8, drift: 'down', speed: 0.3, minPercent: 25, maxPercent: 75 },
-        { colors: ['#ffb02a', '#ff6a1a', '#fff07a'], count: 14, drift: 'up', speed: 0.6, minPercent: 75 },
-      ],
+      particles: [{ colors: ['#ffb02a', '#ff6a1a', '#fff07a'], count: 14, drift: 'up', speed: 0.6, minPercent: 75 }],
     },
     hero: MINER_POSES,
     heroTiers: {
@@ -963,11 +1173,11 @@ export const minecraft: Theme = {
       tier2: armor('ironL', 'ironS', 'ironD', 'W', 'ironD'),
       tier3: armor('diaL', 'diaS', 'diaD', 'glint', 'diaD', ['capeR', 'capeRS']),
       tier4: armor('nethL', 'nethS', 'nethD', 'glint', 'gold', ['capeP', 'capePS']),
-      unknown: { A: 'hair', a: 'hairS', C: 'shirt', c: 'shirtS', L: 'pants', l: 'pantsS', B: 'shoe', b: 'shoeS', E: 'shirt', T: 'hairS' },
+      unknown: { A: 'hair', a: 'hairS', C: 'shirt', c: 'shirtS', L: 'pants', l: 'pantsS', B: 'shoe', b: 'shoeS', E: 'shirt', e: 'hair', T: 'hairS' },
     },
     heroForms: {
-      tier3: { poses: CHAMPION_POSES, dx: -2, dy: -4, lift: LIFT, hand: { x: 2, y: -2 } },
-      tier4: { poses: CHAMPION_POSES, dx: -2, dy: -4, lift: LIFT, hand: { x: 2, y: -2 } },
+      tier3: CHAMPION_FORM,
+      tier4: CHAMPION_FORM,
     },
     heroNames: {
       tier1: 'Leather Rookie',
@@ -983,18 +1193,20 @@ export const minecraft: Theme = {
       xhigh: { sprite: 'pick', swap: { M: 'diaM', m: 'diaP', n: 'glint' }, name: 'Diamond Pickaxe, enchanted' },
       max: { sprite: 'pick', swap: { M: 'nethM', m: 'nethP', n: 'glint' }, aura: 'pickAura', name: 'Netherite Pickaxe, Efficiency V' },
     },
+    // 48 and 58 columns: emeralds and hearts over hunger and the two slots. 80: one row, 77 columns.
+    // The counter keeps five characters, so a growing sum moves nothing.
     bar: {
       widgets: [
-        { kind: 'counter', value: 'spend', icon: 'emeraldIcon' },
+        { kind: 'counter', value: 'spend', icon: 'emeraldIcon', chars: 5 },
         { kind: 'meter', value: 'contextLeft', count: 10, perRow: 5, sprites: ['heart0', 'heart1', 'heart2'], label: 'HEALTH', pulseBelow: 0.2 },
-        { kind: 'meter', value: 'cache', count: 10, perRow: 5, sprites: ['food0', 'food1', 'food2'], label: 'HUNGER', pulseBelow: 0.15, drop: 1 },
-        { kind: 'box', shows: 'model', sprite: 'chestIcon', label: 'ARMOR', x: 1, y: 4, drop: 2 },
-        { kind: 'box', shows: 'effort', sprite: 'pickIcon', label: 'PICK', x: 1, y: 5, drop: 3 },
+        { kind: 'meter', value: 'cache', count: 10, perRow: 5, sprites: ['food0', 'food1', 'food2'], label: 'HUNGER', pulseBelow: 0.15, wrap: true, drop: 3 },
+        { kind: 'box', shows: 'model', sprite: 'chestIcon', label: 'ARMOR', x: 1, y: 4, drop: 1 },
+        { kind: 'box', shows: 'effort', sprite: 'pickIcon', label: 'PICKAXE', x: 1, y: 5, drop: 2 },
       ],
       colors: { bg: 'hudBg', box: 'slot', text: 'hudText', label: 'hudLabel', map: 'mapGray', mapDot: 'emerald' },
     },
-    stamina: { x: 1, y: 1, radius: 4, full: 'clockDay', empty: 'clockNight', cold: 'clockCold', tagIcon: 'emeraldIcon', tagColor: '#ffffff', tagColdColor: '#aaaaaa' },
-    lineup: { ground: 'lineupBg', ink: '#404040', dim: '#6a6a6a', mark: '#aa0000' },
+    stamina: { x: 1, y: 1, radius: 4, full: 'clockDay', empty: 'clockNight', cold: 'clockCold', tagIcon: 'emeraldIcon', tagColor: '#ffffff', tagColdColor: '#c9d6ee' },
+    lineup: { ground: 'lineupBg', ink: '#1e1e1e', dim: '#2a3558', mark: '#7a0000' },
     message: { bg: 'msgBg', ink: '#ffffff' },
   },
   text: {
@@ -1003,30 +1215,30 @@ export const minecraft: Theme = {
     reading: 'The miner pores over the enchanting book.',
     editing: 'The miner breaks stone and places fresh planks.',
     shell: 'The miner pulls a lever; redstone lights the lamps.',
-    agents: 'Tamed wolves run off on errands.',
+    agents: 'Tamed wolves run off on errands and bring back bones.',
     toolSuccess: 'Diamonds! A few XP orbs, too.',
     toolError: 'Sssss... BOOM. A creeper got the miner.',
     turnComplete: 'Advancement made!',
     milestone: 'The miner digs to a new depth.',
-    cacheCold: 'Night falls. The miner sleeps in a bed.',
+    cacheCold: 'Night falls, or underground the torch burns out; the miner goes to bed hungry.',
     limitWarning: 'The world border closes in.',
-    compaction: 'The miner sleeps through the night; the world is saved.',
-    modelChange: 'The miner equips new armor.',
+    compaction: 'The miner sleeps through the dark; the world is saved.',
+    modelChange: 'The miner changes armor.',
     effortChange: 'The anvil rings: a new pickaxe.',
   },
-  // One per context level, as the user's thresholds set them (by default 30, 40, 50, 75).
+  // One per context level, as the user's thresholds set them (by default 30, 40, 50, 75). Two lines at most in 48 columns.
   milestones: [
     { level: 'ok', message: 'Y=64 AND DIGGING. {pct}% OF THE WAY TO BEDROCK. PLENTY OF TORCHES.' },
     { level: 'warn', message: '{pct}% OF THE WAY TO BEDROCK. THE STONE GETS HARD. MIND YOUR TORCHES.' },
     { level: 'orange', message: '{pct}% OF THE WAY TO BEDROCK. DEEPSLATE BELOW. FIND A SPOT TO SET YOUR BED.' },
-    { level: 'alert', message: "{pct}% OF THE WAY TO BEDROCK. CAVES, CREEPERS, NO SPAWN POINT. IT'S DANGEROUS DOWN HERE." },
-    { level: 'critical', message: 'LAVA AHEAD, BEDROCK BELOW! {pct}% DUG. SAVE YOUR PROGRESS AND /clear BEFORE YOU FALL IN.' },
+    { level: 'alert', message: "{pct}% OF THE WAY TO BEDROCK. CREEPERS, NO SPAWN POINT: IT'S DANGEROUS DOWN HERE." },
+    { level: 'critical', message: 'LAVA AHEAD! {pct}% DUG. SAVE YOUR PROGRESS AND /clear BEFORE YOU FALL IN.' },
   ],
   messages: {
-    cacheCold: 'NIGHT FALLS. YOUR CACHE WENT COLD.',
+    cacheCold: 'LIGHTS OUT AND THE HUNGER BAR IS EMPTY. YOUR CACHE WENT COLD.',
     limitWarning: 'THE WORLD BORDER CLOSES IN! {name} AT {pct}%.',
     compaction: 'You slept through the night. World saved (compacted).',
-    modelChange: 'Armor equipped: {name}!',
+    modelChange: 'Armor changed: {name}!',
     effortChange: 'Anvil used: {weapon}!',
   },
 }

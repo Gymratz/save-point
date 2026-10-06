@@ -92,10 +92,15 @@ export function stepCost(p: Price, u: StepUsage, ttl: Ttl): number {
   )
 }
 
+/** How close a billed delta must come to a candidate's cost to count as that TTL. */
+const TTL_TOLERANCE = 0.015
+
 /**
  * Which main-loop TTL explains a billed cost delta: main steps priced at each
  * candidate, subagent steps at 5m (their observed TTL). Null when neither fits
- * within 1.5%, or when too little was written to the cache to tell them apart.
+ * within 1.5%, when too little was written to the cache, or when the two
+ * candidates' costs are too close for the fit to tell them apart (a large
+ * context re-read with a small write: one delta would fit both).
  */
 export function detectTtl(
   deltaUsd: number,
@@ -115,14 +120,28 @@ export function detectTtl(
     return total
   }
   const agentCost = sum(agents, '5m')
-  if (agentCost === null) return null
+  const hour = sum(main, '1h')
+  const minutes = sum(main, '5m')
+  if (agentCost === null || hour === null || minutes === null) return null
+  const predicted = { '1h': hour + agentCost, '5m': minutes + agentCost }
+  if (predicted['1h'] - predicted['5m'] <= 2 * TTL_TOLERANCE * predicted['1h']) return null
   for (const ttl of ['1h', '5m'] as const) {
-    const mainCost = sum(main, ttl)
-    if (mainCost === null) return null
-    const predicted = mainCost + agentCost
-    if (predicted > 0 && Math.abs(deltaUsd - predicted) / predicted < 0.015) return ttl
+    if (predicted[ttl] > 0 && Math.abs(deltaUsd - predicted[ttl]) / predicted[ttl] < TTL_TOLERANCE) return ttl
   }
   return null
+}
+
+/**
+ * What one turn's verdict does to the TTL in use. A verdict that agrees with
+ * it settles it; one that would change it (from the detected value, or from
+ * the 1h assumed before any) waits as `pending` for the next verdict to agree,
+ * so a single turn whose cost happened to fit the other TTL changes nothing.
+ * A turn without a verdict leaves both as they are.
+ */
+export function confirmTtl(detected: Ttl | null, pending: Ttl | null, found: Ttl | null): { detected: Ttl | null; pending: Ttl | null } {
+  if (!found) return { detected, pending }
+  if (found === (detected ?? '1h')) return { detected: found, pending: null }
+  return pending === found ? { detected: found, pending: null } : { detected, pending: found }
 }
 
 /** Minimum cost of the next message: context re-read (warm) or re-written (cold). */

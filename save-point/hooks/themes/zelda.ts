@@ -8,9 +8,9 @@
 // Sprites are rows of characters; each character is a key of `pixels` below
 // (so 'G' is the tunic). Hero tiers and swords recolor by swapping keys.
 
-import { at, hero, loop, once, weapon } from './kit'
+import { at, hero, loop, once, oneOf, weapon } from './kit'
 import { rotate } from './pixel'
-import type { Actor, Theme } from './types'
+import type { Actor, HeroTier, Theme } from './types'
 
 const pixels = {
   // Hero
@@ -36,7 +36,8 @@ const pixels = {
   hoodT: '#8c8c8c',
   hoodS: '#545454',
   hurtA: '#fcfcfc',
-  hurtB: '#e04030',
+  hurtB: '#fc7c00', // not a tunic color, so the flash shows on every tier
+  hurtC: '#c84c0c',
   // Scenery
   ground: '#fcd8a8',
   v: '#3c9c28', // leaf
@@ -67,8 +68,6 @@ const pixels = {
   u: '#80d010', // rupee
   U: '#2e8c0c',
   i: '#d0f8a0',
-  N: '#3050f8', // bomb
-  d: '#1830a0',
   // Swords
   P: '#704000', // hilt
   F: '#8c8c8c', // guard
@@ -76,15 +75,16 @@ const pixels = {
   T: '#fcfcfc', // tip
   wood: '#b07030',
   woodDark: '#704010',
-  steel: '#e8e8f0',
-  steelDark: '#7878a0',
-  magic: '#5cd4fc',
-  magicDark: '#2070c8',
-  master: '#c8e8ff',
-  masterGuard: '#6840c8',
+  steel: '#b4bcd4',
+  steelDark: '#686890',
+  magic: '#38c0fc',
+  magicDark: '#1c60c0',
+  master: '#7c9cfc',
+  masterGuard: '#6030c0',
   aura: '#fcf080',
   // Status bar
   black: '#000000',
+  barRed: '#f04830', // the bar's labels: the heart red is too dark for text on black
   boxBlue: '#2038ec',
   mapGrey: '#747474',
   staminaFull: '#5cd82c',
@@ -145,9 +145,9 @@ const sprites: Theme['sprites'] = {
   ]),
   champItemGet: champ([
     '.SS.....YjjY.....SS.',
-    '.SS....AAYYAA....SS.',
-    '.YY...AAAAAAAA...YY.',
-    '.Gg..AaAAAAAAaA..gG.',
+    '.SS.W..AAYYAA..W.SS.',
+    '.YY.W.AAAAAAAA.W.YY.',
+    '.GgWCAaAAAAAAaACWgG.',
     '.GgCaYYYYYYYYYYaCgG.',
     '.Gg.aSSSSSSSSSSa.gG.',
     '.Gg.aSKWSSSSWKSa.gG.',
@@ -232,7 +232,7 @@ const sprites: Theme['sprites'] = {
       'SS.GGGGGGGGGG.SS',
       '.GGGGGGGGGGGGGG.',
       '.GHHHHHHHHHHHGG.',
-      '.GHSSSSSSSSSHSG.',
+      '.GHSSSSSSSSSHGG.',
       '..SSKWSSWKSSSS..',
       '...SSSSSSSSSS...',
       '....SSSSSSSS....',
@@ -265,9 +265,150 @@ const sprites: Theme['sprites'] = {
       '..HHHH....HHHH..',
     ],
   },
+  // Facing right, for an enemy at his side: standing, the lunge, and the lunge
+  // with the sword arm low (a stab down to the right). The lunges are two pixels
+  // wider on the left: the step forward is in the sprite.
+  side: {
+    rows: [
+      '......GGGG......',
+      '....GGGGGGGG....',
+      '...GGGGGGGGGG...',
+      '.GGGGGGGGGGGG...',
+      'GGGGHHHHHHHHH...',
+      'GGg.HHHSSSSSS...',
+      '.g..HSHSSSWKS...',
+      '....HSSSSSSSSS..',
+      '.....SSSSSSSS...',
+      '....GGGGGGGG....',
+      '...GGGlLLLlGSS..',
+      '...GGblLLLlbSS..',
+      '...GGGlLLLlG....',
+      '...GGGGlLlGG....',
+      '....HHH..HHH....',
+      '....HHHH.HHHH...',
+    ],
+  },
+  thrust: {
+    rows: [
+      '.........GGGG.....',
+      '.......GGGGGGGG...',
+      '......GGGGGGGGGG..',
+      '....GGGGGGGGGGGG..',
+      '...GGGGHHHHHHHHH..',
+      '..GGg..HHHSSSSSS..',
+      '.......HSHSSSWKS..',
+      '.......HSSSSSSSSS.',
+      '........SSSSSSSS..',
+      '.......GGGGGGGG...',
+      '......GGGlLLLlGGSS',
+      '......GGblLLLlGGSS',
+      '......GGGlLLLl....',
+      '.....GGGGGlLlGG...',
+      '....HHH.....HHH...',
+      '...HHHH.....HHHH..',
+    ],
+  },
+  thrustLow: {
+    rows: [
+      '.........GGGG.....',
+      '.......GGGGGGGG...',
+      '......GGGGGGGGGG..',
+      '....GGGGGGGGGGGG..',
+      '...GGGGHHHHHHHHH..',
+      '..GGg..HHHSSSSSS..',
+      '.......HSHSSSWKS..',
+      '.......HSSSSSSSSS.',
+      '........SSSSSSSS..',
+      '.......GGGGGGGG...',
+      '......GGGlLLLlG...',
+      '......GGblLLLlGG..',
+      '......GGGlLLLlGSS.',
+      '.....GGGGGlLlG.SS.',
+      '....HHH.....HHH...',
+      '...HHHH.....HHHH..',
+    ],
+  },
+  champSide: champ([
+    '.WW.....YjjjY.......',
+    '.WWW...AAAYYAAA.....',
+    '..WWC.AAAAAAAAAA....',
+    '..CWWCAaWAAAAAAA....',
+    '...CCWWWaYYYYYYYY...',
+    '.....CCaaSSSSSSS....',
+    '......aAaSSSSWKS....',
+    '......aAaSSSSSSSS...',
+    '.......aHSSSSHHH....',
+    '........HHHHHHH.....',
+    '..gGGGYYYYAHHAA.....',
+    '.gGGGYYjjYYAAAAa....',
+    '.gGGGalllllAAASS....',
+    'gGGGGalYGYlAAASS....',
+    'gGGGgalGYGlAAAa.....',
+    'gGGGgblGYGlbbbb.....',
+    'gGGgg.lGYGlGGGG.....',
+    '.gGg..GlGlGGGGG.....',
+    '.gg...gGlGg.gGGG....',
+    '......Gaaa..aaaG....',
+    '......aAAA..AAAa....',
+    '......qqqqq.qqqqq...',
+  ]),
+  champThrust: champ([
+    '..WW.....YjjjY......',
+    '..WWW...AAAYYAAA....',
+    '...WWC.AAAAAAAAAA...',
+    '...CWWCAaWAAAAAAA...',
+    '....CCWWWaYYYYYYYY..',
+    '......CCaaSSSSSSS...',
+    '.......aAaSSSSWKS...',
+    '.......aAaSSSSSSSS..',
+    '........aHSSSSHHH...',
+    '.........HHHHHHH....',
+    '.ggGGGGYYYYAHHAA....',
+    'gGGGGGYYjjYYAAAA....',
+    'gGGg..alllllAAAa....',
+    '.gg...alYGYlAAAa....',
+    '......alGYGlAAAAaa..',
+    '......alGYGlAAaAAASS',
+    '......blGYGlbbaaaaSS',
+    '.....GGGlGlGGGGG....',
+    '....gGGGGlGg..gGGG..',
+    '...gGaaa......aaaG..',
+    '..aAAA.........AAAa.',
+    '.qqqqq.........qqqqq',
+  ]),
+  champThrustLow: champ([
+    '..WW.....YjjjY......',
+    '..WWW...AAAYYAAA....',
+    '...WWC.AAAAAAAAAA...',
+    '...CWWCAaWAAAAAAA...',
+    '....CCWWWaYYYYYYYY..',
+    '......CCaaSSSSSSS...',
+    '.......aAaSSSSWKS...',
+    '.......aAaSSSSSSSS..',
+    '........aHSSSSHHH...',
+    '.........HHHHHHH....',
+    '.ggGGGGYYYYAHHAA....',
+    'gGGGGGYYjjYYAAAA....',
+    'gGGg..alllllAAAa....',
+    '.gg...alYGYlAAAa....',
+    '......alGYGlAAAAa...',
+    '......alGYGlAAaAAa..',
+    '......blGYGlbbbaAAa.',
+    '.....GGGlGlGGGGGaSS.',
+    '....gGGGGlGg..gGGSS.',
+    '...gGaaa......aaaG..',
+    '..aAAA.........AAAa.',
+    '.qqqqq.........qqqqq',
+  ]),
   sword: { rows: ['.P.', 'FFF', '.E.', '.E.', '.E.', '.E.', '.E.', '.E.', '.T.'] },
   aura: {
     rows: ['.....', '.....', '.y.y.', 'y...y', '.y.y.', 'y...y', '.y.y.', 'y...y', '.y.y.', 'y...y', '..y..'],
+    legend: { y: 'aura' },
+  },
+  // The sword pointing down to the right, hilt at the top left, and its aura.
+  swordDiag: { rows: ['P.F.....', '.F......', 'F.EE....', '...EE...', '....EE..', '.....EE.', '......ET', '.......T'] },
+  auraDiag: {
+    rows: ['...........', '...........', '...........', '.....y.....', '.......y...', '...y.......', '.....y..y..', '..........y', '......y....', '.........y.'],
     legend: { y: 'aura' },
   },
   tree: {
@@ -291,6 +432,10 @@ const sprites: Theme['sprites'] = {
   fireOut: {
     rows: ['....m...', '...m....', '....m...', '........', '........', 'w.www.w.', '.wwwwww.', 'w......w'],
   },
+  fireOut2: {
+    rows: ['...m....', '....m...', '.....m..', '........', '........', 'w.www.w.', '.wwwwww.', 'w......w'],
+  },
+  candle: { rows: ['.y.', 'yoy', '.L.', '.L.'] },
   torch: { rows: ['...', '...', '.t.', 'ttt', '.t.', '.t.', 'ttt'] },
   torchLit: { rows: ['.y.', 'yoy', 'ror', 'ttt', '.t.', '.t.', 'ttt'] },
   torchLit2: { rows: ['y..', '.oy', 'ror', 'ttt', '.t.', '.t.', 'ttt'] },
@@ -302,15 +447,23 @@ const sprites: Theme['sprites'] = {
     rows: ['.YxxxxxxY.', 'YxxxxxxxxY', 'XXXXXXXXXX', 'YxxxYYxxxY', 'xxxxjjxxxx', 'xxxxxxxxxx', 'XXXXXXXXXX'],
   },
   chestOpen: {
-    rows: ['YXXXXXXXXY', 'X.y.y.y..X', 'XXXXXXXXXX', 'YxxxYYxxxY', 'xxxxjjxxxx', 'xxxxxxxxxx', 'XXXXXXXXXX'],
+    rows: ['YXXXXXXXXY', 'X.y.yy.y.X', 'XXXXXXXXXX', 'YxxxYYxxxY', 'xxxxjjxxxx', 'xxxxxxxxxx', 'XXXXXXXXXX'],
   },
-  triforce: {
-    rows: ['.....Y.....', '....YjY....', '...YYYjY...', '..Y.....Y..', '.YjY...YjY.', 'YYYjY.YYYjY'],
-  },
+  // One piece of the Triforce: what a finished dungeon gives.
+  shard: { rows: ['....Y....', '...YjY...', '..YYYjY..', '.YYYYYjY.', 'YYYYYYYjY'] },
   fairy1: { rows: ['a...a', '.aWa.', '..p..', '.apa.', 'a...a'] },
   fairy2: { rows: ['.....', 'aaWaa', '..p..', 'aapaa', '.....'] },
   potion: { rows: ['.ww.', '.nn.', 'nrrn', 'rrrr', 'rrrr', '.rr.'] },
-  sweat: { rows: ['.O.', 'OOO', '.O.'] },
+  sweat: { rows: ['.O.', '.O.', 'OOO', 'OOO', '.O.'] },
+  // The hourglass of the limit warning: red sand running out.
+  hourglass1: { rows: ['wwwwwww', '.trrrt.', '.trrrt.', '..trt..', '...r...', '..tWt..', '.tWrWt.', '.tWWWt.', 'wwwwwww'] },
+  hourglass2: { rows: ['wwwwwww', '.tWWWt.', '.trrrt.', '..trt..', '...r...', '..tWt..', '.tWrWt.', '.trrrt.', 'wwwwwww'] },
+  hourglass3: { rows: ['wwwwwww', '.tWWWt.', '.tWWWt.', '..tWt..', '...W...', '..trt..', '.trrrt.', '.trrrt.', 'wwwwwww'] },
+  // Scenery past the action, from the right edge in.
+  cave: {
+    rows: ['...kkk...', '..kkkkkq.', '.kkWkkkqq', '.kkkkkkqq', 'kkkKKKkqq', 'kkKKKKKqq', 'kkKKKKKqq', 'kkKKKKKqq', 'kkKKKKKqq', 'kkKKKKKqq'],
+  },
+  pond: { rows: ['..LLLLLLLL..', '.LLaLLLLLLL.', 'LLLLLLLaLLLL', 'LLLLLLLLLLLL', '.LLLLaLLLLL.', '..LLLLLLLL..'] },
   // Status bar
   heart0: heart(0),
   heart1: heart(1),
@@ -328,27 +481,52 @@ sprites.lie = rotate(sprites.sleep!, 'ccw')
 const wingless = sprites.champSleep!.rows.map((r, y) => (y > 4 ? r : [...r].map((ch, x) => ((ch === 'W' || ch === 'C') && (x < 5 || x > 14) ? '.' : ch)).join('')))
 sprites.champLie = rotate({ ...sprites.champSleep!, rows: wingless }, 'ccw')
 
-// Frames: actors are placed relative to the hero's top-left (see kit.ts).
-/** The sword in the hero's hand as he swings. */
+// Frames: actors are placed relative to the hero's top-left (see kit.ts). The
+// action stays inside columns 0..45 (the hero stands at 16..31, the champion at
+// 14..33), so it is whole in the narrowest pane the theme is laid out for.
+/** The sword in the hero's hand as he swings: down, level to the right (the stored sword turned), down to the right. */
 const sword = () => weapon(6, 13)
+const swordLevel = () => weapon(18, 10, { turn: 'ccw' })
+const swordDiag = () => weapon(17, 14, { pose: 'diag' })
 
+const INK = '#1c1c1c'
+const GOLD = '#f8c800'
+const SMALL: HeroTier[] = ['tier1', 'tier2', 'unknown']
+const BIG: HeroTier[] = ['tier3', 'tier4']
 const FIRE = { x: 22, y: 8 }
 const BUSH = { x: 4, y: 18 }
-const torchesLit = (n: number, flicker = false): Actor[] =>
-  [0, 1, 2, 3].map(k => at(k < n ? (flicker && k % 2 ? 'torchLit2' : 'torchLit') : 'torch', 22 + k * 6, 6))
+const ROCK = { x: 4, y: 17 }
+const CHEST = { x: 20, y: 9 }
+// Four torches in a square to the hero's right, lit one by one.
+const TORCHES = [
+  { x: 21, y: 0 },
+  { x: 27, y: 0 },
+  { x: 21, y: 10 },
+  { x: 27, y: 10 },
+]
+const CANDLE = at('candle', 16, 6)
+const torchesLit = (n: number, flicker = false): Actor[] => TORCHES.map((t, k) => at(k < n ? (flicker && k % 2 ? 'torchLit2' : 'torchLit') : 'torch', t.x, t.y))
+// The fairies leave the raised hands for the lower corners and come back. Past the
+// first frame they are `fixed`: the path is the same whatever the hero's height.
+const fairies = (step: 0 | 1 | 2, flap = false): Actor[] => {
+  const [a, b] = flap ? ['fairy2', 'fairy1'] : ['fairy1', 'fairy2']
+  if (step === 0) return [at(a!, -2, -2), at(b!, 13, -2)]
+  if (step === 1) return [at(b!, -7, 12, { fixed: true }), at(a!, 18, 12, { fixed: true })]
+  return [at(a!, -9, 18, { fixed: true }), at(b!, 20, 18, { fixed: true })]
+}
 
 const states: Theme['states'] = {
   idle: loop(
-    { actors: [hero('lie'), at('fire1', FIRE.x, FIRE.y)], texts: [{ text: 'z', x: 4, y: -2, color: '#1c1c1c' }], hold: 3 },
-    { actors: [hero('lie'), at('fire2', FIRE.x, FIRE.y)], texts: [{ text: 'z', x: 5, y: -4, color: '#1c1c1c' }], hold: 3 },
-    { actors: [hero('lie'), at('fire1', FIRE.x, FIRE.y)], texts: [{ text: 'Z', x: 6, y: -6, color: '#1c1c1c' }], hold: 3 },
+    { actors: [hero('lie'), at('fire1', FIRE.x, FIRE.y)], texts: [{ text: 'z', x: 4, y: -2, color: INK }], hold: 3 },
+    { actors: [hero('lie'), at('fire2', FIRE.x, FIRE.y)], texts: [{ text: 'z', x: 5, y: -4, color: INK }], hold: 3 },
+    { actors: [hero('lie'), at('fire1', FIRE.x, FIRE.y)], texts: [{ text: 'Z', x: 6, y: -6, color: INK }], hold: 3 },
     { actors: [hero('lie'), at('fire2', FIRE.x, FIRE.y)], hold: 3 },
   ),
   thinking: loop(
-    { actors: [hero('stand')], texts: [{ text: '.', x: 17, y: 0, color: '#1c1c1c' }], hold: 2 },
-    { actors: [hero('stand')], texts: [{ text: '..', x: 17, y: 0, color: '#1c1c1c' }], hold: 2 },
-    { actors: [hero('stand')], texts: [{ text: '...', x: 17, y: 0, color: '#1c1c1c' }], hold: 2 },
-    { actors: [hero('walk')], texts: [{ text: '?', x: 17, y: 0, color: '#1c1c1c' }], hold: 2 },
+    { actors: [hero('stand')], texts: [{ text: '.', x: 19, y: 0, color: INK }], hold: 2 },
+    { actors: [hero('stand')], texts: [{ text: '..', x: 19, y: 0, color: INK }], hold: 2 },
+    { actors: [hero('stand')], texts: [{ text: '...', x: 19, y: 0, color: INK }], hold: 2 },
+    { actors: [hero('walk')], texts: [{ text: '?', x: 19, y: 0, color: INK }], hold: 2 },
   ),
   reading: loop(
     { actors: [hero('stand'), at('bush', BUSH.x, BUSH.y)], hold: 2 },
@@ -358,79 +536,94 @@ const states: Theme['states'] = {
     { actors: [hero('walk')], hold: 1 },
   ),
   editing: loop(
-    { actors: [hero('stand'), at('rock', BUSH.x, BUSH.y)], hold: 2 },
-    { actors: [hero('attack'), sword(), at('rock', BUSH.x, BUSH.y), at('spark', 5, 16)], hold: 1 },
-    { actors: [hero('attack'), sword(), at('rock', BUSH.x, BUSH.y)], hold: 1 },
-    { actors: [hero('attack'), sword(), at('rock', BUSH.x, BUSH.y), at('spark', 6, 15)], hold: 1 },
-    { actors: [hero('stand'), at('rock', BUSH.x, BUSH.y)], hold: 2 },
+    { actors: [hero('stand'), at('rock', ROCK.x, ROCK.y)], hold: 2 },
+    { actors: [hero('attack'), sword(), at('rock', ROCK.x, ROCK.y), at('spark', 5, 15)], hold: 1 },
+    { actors: [hero('attack'), sword(), at('rock', ROCK.x, ROCK.y)], hold: 1 },
+    { actors: [hero('attack'), sword(), at('rock', ROCK.x, ROCK.y), at('spark', 6, 14)], hold: 1 },
+    { actors: [hero('stand'), at('rock', ROCK.x, ROCK.y)], hold: 2 },
   ),
+  // He turns to the torches and holds a candle out to them.
   shell: loop(
-    { actors: [hero('stand'), ...torchesLit(0)], hold: 2 },
-    { actors: [hero('stand'), ...torchesLit(1)], hold: 2 },
-    { actors: [hero('stand'), ...torchesLit(2)], hold: 2 },
-    { actors: [hero('stand'), ...torchesLit(3)], hold: 2 },
-    { actors: [hero('itemGet'), ...torchesLit(4)], hold: 2 },
+    { actors: [hero('side'), ...torchesLit(0)], hold: 2 },
+    { actors: [hero('thrust'), CANDLE, ...torchesLit(1)], hold: 2 },
+    { actors: [hero('thrust'), CANDLE, ...torchesLit(2)], hold: 2 },
+    { actors: [hero('thrust'), CANDLE, ...torchesLit(3)], hold: 2 },
+    { actors: [hero('thrust'), CANDLE, ...torchesLit(4)], hold: 2 },
     { actors: [hero('itemGet'), ...torchesLit(4, true)], hold: 2 },
   ),
   agents: loop(
-    { actors: [hero('itemGet'), at('fairy1', -2, 2), at('fairy2', 14, 2)], hold: 2 },
-    { actors: [hero('itemGet'), at('fairy2', -7, 4), at('fairy1', 20, 4)], hold: 2 },
-    { actors: [hero('itemGet'), at('fairy1', -13, 7), at('fairy2', 28, 7)], hold: 2 },
+    { actors: [hero('itemGet'), ...fairies(0)], hold: 2 },
+    { actors: [hero('itemGet'), ...fairies(1)], hold: 2 },
+    { actors: [hero('itemGet'), ...fairies(2)], hold: 2 },
     { actors: [hero('stand')], hold: 3 },
-    { actors: [hero('itemGet'), at('fairy2', -13, 7), at('fairy1', 28, 7)], hold: 2 },
-    { actors: [hero('itemGet'), at('fairy1', -7, 4), at('fairy2', 20, 4)], hold: 2 },
+    { actors: [hero('itemGet'), ...fairies(2, true)], hold: 2 },
+    { actors: [hero('itemGet'), ...fairies(1, true)], hold: 2 },
   ),
 }
 
 const cold: Theme['cold'] = {
+  // Only the smoke drifts; the logs stay put.
   idle: loop(
-    { actors: [hero('lie'), at('fireOut', FIRE.x, FIRE.y)], texts: [{ text: 'z', x: 4, y: -2, color: '#1c1c1c' }], hold: 4 },
-    { actors: [hero('lie'), at('fireOut', FIRE.x + 1, FIRE.y)], texts: [{ text: 'Z', x: 5, y: -4, color: '#1c1c1c' }], hold: 4 },
+    { actors: [hero('lie'), at('fireOut', FIRE.x, FIRE.y)], texts: [{ text: 'z', x: 4, y: -2, color: INK }], hold: 4 },
+    { actors: [hero('lie'), at('fireOut2', FIRE.x, FIRE.y)], texts: [{ text: 'Z', x: 5, y: -4, color: INK }], hold: 4 },
   ),
 }
 
 const SIGH = 'Overqualified for this.'
-const sweat = at('sweat', 13, -1)
+// A drop beside the brow: clear of the cap's tail, and of the champion's wing.
+const sweat: Actor[] = [
+  { ...at('sweat', 17, 2), tiers: SMALL },
+  { ...at('sweat', 19, -4, { fixed: true }), tiers: BIG },
+]
+const sigh = { text: '~sigh~', x: 21, y: 4, color: INK }
 const overkill: Theme['overkill'] = {
   reading: loop(
-    { actors: [hero('stand'), at('bush', BUSH.x, BUSH.y), sweat], hold: 2, caption: SIGH },
-    { actors: [hero('attack'), sword(), at('bush', BUSH.x, BUSH.y), sweat], hold: 1, caption: SIGH },
-    { actors: [hero('attack'), sword(), at('leaves1', BUSH.x, BUSH.y), sweat], hold: 2, caption: SIGH },
-    { actors: [hero('stand'), sweat], texts: [{ text: '~sigh~', x: 17, y: 0, color: '#1c1c1c' }], hold: 3, caption: SIGH },
+    { actors: [hero('stand'), at('bush', BUSH.x, BUSH.y), ...sweat], hold: 2, caption: SIGH },
+    { actors: [hero('attack'), sword(), at('bush', BUSH.x, BUSH.y), ...sweat], hold: 1, caption: SIGH },
+    { actors: [hero('attack'), sword(), at('leaves1', BUSH.x, BUSH.y), ...sweat], hold: 2, caption: SIGH },
+    { actors: [hero('stand'), ...sweat], texts: [sigh], hold: 3, caption: SIGH },
   ),
   shell: loop(
-    { actors: [hero('stand'), ...torchesLit(0), sweat], hold: 2, caption: SIGH },
-    { actors: [hero('stand'), ...torchesLit(2), sweat], hold: 2, caption: SIGH },
-    { actors: [hero('stand'), ...torchesLit(4), sweat], hold: 2, caption: SIGH },
-    { actors: [hero('stand'), ...torchesLit(4, true), sweat], texts: [{ text: '~sigh~', x: 17, y: 0, color: '#1c1c1c' }], hold: 3, caption: SIGH },
+    { actors: [hero('stand'), ...torchesLit(0), ...sweat], hold: 2, caption: SIGH },
+    { actors: [hero('stand'), ...torchesLit(2), ...sweat], hold: 2, caption: SIGH },
+    { actors: [hero('stand'), ...torchesLit(4), ...sweat], hold: 2, caption: SIGH },
+    { actors: [hero('stand'), ...torchesLit(4, true), ...sweat], hold: 3, caption: SIGH },
   ),
 }
 
+const HURT_A = { G: 'hurtA', g: 'hurtA' }
+const HURT_B = { G: 'hurtB', g: 'hurtC' }
+const HOURGLASS = { x: 22, y: 7 }
+/** A slime appears at `spot`; the hero turns to it (`ready`), runs it through (`lunge`, `blade`) and it bursts. */
+const slain = (ready: string, lunge: string, blade: () => Actor, spot: { x: number; y: number }) =>
+  once(
+    { actors: [hero(ready), at('slime1', spot.x, spot.y)], hold: 1 },
+    { actors: [hero(lunge), at('slime2', spot.x, spot.y), blade()], hold: 1 },
+    { actors: [hero(lunge), blade(), at('puff1', spot.x + 1, spot.y)], hold: 1 },
+    { actors: [hero(ready), at('puff2', spot.x + 1, spot.y - 1)], hold: 1 },
+  )
 const events: Theme['events'] = {
-  toolSuccess: once(
-    { actors: [hero('attack'), sword(), at('slime1', 20, 8)], hold: 1 },
-    { actors: [hero('attack'), sword(), at('slime2', 20, 8)], hold: 1 },
-    { actors: [hero('stand'), at('puff1', 21, 8)], hold: 1 },
-    { actors: [hero('stand'), at('puff2', 21, 7)], hold: 1 },
-  ),
+  // The slime is to the right, down to the right, or below: a different one each time.
+  toolSuccess: oneOf(slain('side', 'thrust', swordLevel, { x: 22, y: 8 }), slain('side', 'thrustLow', swordDiag, { x: 21, y: 17 }), slain('stand', 'attack', sword, BUSH)),
+  // Knocked back two pixels at most (the champion stays off the ring), and back to his place.
   toolError: once(
-    { actors: [hero('stand', -1, 0, { G: 'hurtA', g: 'hurtA' })], hold: 1 },
-    { actors: [hero('stand', -3, 0, { G: 'hurtB', g: 'hurtB' })], hold: 1 },
-    { actors: [hero('stand', -4, 0, { G: 'hurtA', g: 'hurtA' })], hold: 1 },
-    { actors: [hero('stand', -4, 0, { G: 'hurtB', g: 'hurtB' })], hold: 1 },
-    { actors: [hero('stand', -3, 0)], hold: 1 },
+    { actors: [hero('stand', -1, 0, HURT_A)], hold: 1 },
+    { actors: [hero('stand', -2, 0, HURT_B)], hold: 1 },
+    { actors: [hero('stand', -2, 0, HURT_A)], hold: 1 },
+    { actors: [hero('stand', -1, 0, HURT_B)], hold: 1 },
+    { actors: [hero('stand')], hold: 1 },
   ),
   turnComplete: once(
-    { actors: [hero('stand'), at('chest', 20, 9)], hold: 2 },
-    { actors: [hero('stand'), at('chestOpen', 20, 9)], hold: 1 },
+    { actors: [hero('side'), at('chest', CHEST.x, CHEST.y)], hold: 2 },
+    { actors: [hero('side'), at('chestOpen', CHEST.x, CHEST.y)], hold: 1 },
     {
-      actors: [hero('itemGet'), at('chestOpen', 20, 9), at('triforce', 3, -7)],
-      texts: [{ text: '*', x: 1, y: -8, color: '#f8c800' }, { text: '*', x: 15, y: -6, color: '#f8c800' }],
+      actors: [hero('itemGet'), at('chestOpen', CHEST.x, CHEST.y), at('shard', 4, -6)],
+      texts: [{ text: '*', x: -3, y: -4, color: GOLD, lift: true }, { text: '*', x: 19, y: -6, color: GOLD, lift: true }],
       hold: 2,
     },
     {
-      actors: [hero('itemGet'), at('chestOpen', 20, 9), at('triforce', 3, -7)],
-      texts: [{ text: '*', x: 0, y: -4, color: '#f8c800' }, { text: '*', x: 16, y: -10, color: '#f8c800' }],
+      actors: [hero('itemGet'), at('chestOpen', CHEST.x, CHEST.y), at('shard', 4, -6)],
+      texts: [{ text: '*', x: -4, y: -7, color: GOLD, lift: true }, { text: '*', x: 18, y: -3, color: GOLD, lift: true }],
       hold: 3,
     },
   ),
@@ -438,40 +631,54 @@ const events: Theme['events'] = {
   cacheCold: once(
     { actors: [hero('lie'), at('fire1', FIRE.x, FIRE.y)], hold: 2 },
     { actors: [hero('lie'), at('fireOut', FIRE.x, FIRE.y)], hold: 2 },
-    { actors: [hero('lie'), at('fireOut', FIRE.x, FIRE.y)], message: 'cacheCold', hold: 12 },
+    { actors: [hero('lie'), at('fireOut', FIRE.x, FIRE.y)], message: 'cacheCold', hold: 6 },
+    { actors: [hero('lie'), at('fireOut2', FIRE.x, FIRE.y)], message: 'cacheCold', hold: 6 },
   ),
-  limitWarning: once({ actors: [hero('stand', 0, 0, { G: 'hurtB' })], message: 'limitWarning', hold: 15 }),
+  limitWarning: once(
+    { actors: [hero('side'), at('hourglass1', HOURGLASS.x, HOURGLASS.y)], message: 'limitWarning', hold: 5 },
+    { actors: [hero('side'), at('hourglass2', HOURGLASS.x, HOURGLASS.y)], message: 'limitWarning', hold: 5 },
+    { actors: [hero('side'), at('hourglass3', HOURGLASS.x, HOURGLASS.y)], message: 'limitWarning', hold: 5 },
+  ),
+  // Held up, drunk (the bottle upended at the mouth), and a heart comes back beside him.
   compaction: once(
-    { actors: [hero('itemGet'), at('potion', 6, -7)], hold: 3, caption: 'compaction' },
-    { actors: [hero('itemGet'), at('potion', 6, -8)], hold: 3, caption: 'compaction' },
-    { actors: [hero('stand')], hold: 2, caption: 'compaction' },
+    { actors: [hero('itemGet'), at('potion', 6, -7)], hold: 2, caption: 'compaction' },
+    {
+      actors: [hero('stand'), { ...at('potion', 6, 3, { flipY: true, fixed: true }), tiers: SMALL }, { ...at('potion', 6, -3, { flipY: true, fixed: true }), tiers: BIG }],
+      hold: 3,
+      caption: 'compaction',
+    },
+    { actors: [hero('stand'), at('heart4', 20, 3)], hold: 3, caption: 'compaction' },
   ),
   modelChange: once(
     { actors: [hero('stand'), at('puff1', 5, 5)], hold: 1 },
     { actors: [at('puff2', 4, 4), at('puff1', 6, 8)], hold: 1 },
     { actors: [hero('itemGet')], hold: 6, caption: 'modelChange' },
   ),
+  // The hilt sits on the raised left hand.
   effortChange: once(
-    { actors: [hero('itemGet'), weapon(6, -9, { flipY: true })], hold: 3 },
+    { actors: [hero('itemGet'), weapon(-1, -8, { flipY: true })], hold: 3 },
     {
-      actors: [hero('itemGet'), weapon(6, -9, { flipY: true })],
-      texts: [{ text: '*', x: 4, y: -10, color: '#fcfcfc' }],
+      actors: [hero('itemGet'), weapon(-1, -8, { flipY: true })],
+      texts: [{ text: '*', x: -4, y: -5, color: GOLD, lift: true }, { text: '*', x: 4, y: -8, color: GOLD, lift: true }],
       hold: 5,
       caption: 'effortChange',
     },
   ),
 }
 
-const CHAMPION_POSES = { stand: 'champStand', walk: 'champWalk', attack: 'champAttack', itemGet: 'champItemGet', sleep: 'champSleep', lie: 'champLie' }
+const CHAMPION_POSES = { stand: 'champStand', walk: 'champWalk', attack: 'champAttack', itemGet: 'champItemGet', sleep: 'champSleep', lie: 'champLie', side: 'champSide', thrust: 'champThrust', thrustLow: 'champThrustLow' }
+
+// His hands are a pixel higher than the small hero's; a sword held aloft stops a pixel short of the trees.
+const CHAMPION_FORM = { poses: CHAMPION_POSES, dx: -2, dy: -6, lift: 6, hand: { x: 0, y: -1 }, aloft: { x: 0, y: 1 } }
 
 export const zelda: Theme = {
   id: 'zelda',
   name: 'The Legend of Context',
   description: 'NES overworld homage: hearts, rupees, a tunic per model and a sword per effort',
-  version: '1.0.0',
+  version: '1.1.0',
   palette: {
-    dark: { accent: '#5cb82c', gold: '#f8c800', red: '#e04030', label: '#fc9838', dim: '#8c8c8c', text: '#fcfcfc' },
-    light: { accent: '#2e7a16', gold: '#a87800', red: '#b02010', label: '#b85c00', dim: '#6c6c6c', text: '#1c1c1c' },
+    dark: { accent: '#5cb82c', gold: '#f8c800', red: '#f06450', label: '#fc9838', dim: '#8c8c8c', text: '#fcfcfc' },
+    light: { accent: '#2e7a16', gold: '#856000', red: '#b02010', label: '#a04c00', dim: '#6c6c6c', text: '#1c1c1c' },
   },
   pixels,
   labels: {
@@ -488,7 +695,7 @@ export const zelda: Theme = {
     Context: 'Life',
     Cost: 'Rupees',
     'Next message': 'Stamina',
-    Tokens: 'Bestiary',
+    Tokens: 'Runes',
     Limits: 'Hourglasses',
     'Tool calls': 'Inventory',
     Files: 'Map',
@@ -499,10 +706,22 @@ export const zelda: Theme = {
   overkill,
   events,
   scene: {
-    height: 38,
-    anchor: { x: 16, y: 13 },
-    background: { ground: 'ground', border: 'tree' },
-    hero: { stand: 'stand', walk: 'walk', attack: 'attack', itemGet: 'itemGet', sleep: 'sleep', lie: 'lie' },
+    // Two rows more than the small hero needs: the champion's raised item clears the trees at the design height.
+    height: 42,
+    anchor: { x: 16, y: 17 },
+    background: {
+      ground: 'ground',
+      border: 'tree',
+      // Past the action (columns 0..45), from the right edge in: a cave at 58, a boulder and a bush at 80, a tree and a pond at 96.
+      decor: [
+        { sprite: 'cave', x: -1, y: 23, minColumns: 56 },
+        { sprite: 'rock', x: -13, y: 27, minColumns: 78 },
+        { sprite: 'bush', x: -20, y: 21, minColumns: 78 },
+        { sprite: 'tree', x: -32, y: 19, minColumns: 94 },
+        { sprite: 'pond', x: -34, y: 31, minColumns: 94 },
+      ],
+    },
+    hero: { stand: 'stand', walk: 'walk', attack: 'attack', itemGet: 'itemGet', sleep: 'sleep', lie: 'lie', side: 'side', thrust: 'thrust', thrustLow: 'thrustLow' },
     heroTiers: {
       tier1: {},
       tier2: { G: 'blueT', g: 'blueS' },
@@ -511,10 +730,10 @@ export const zelda: Theme = {
       unknown: { G: 'hoodT', g: 'hoodS' },
     },
     heroForms: {
-      tier3: { poses: CHAMPION_POSES, dx: -2, dy: -6, lift: 6 },
-      tier4: { poses: CHAMPION_POSES, dx: -2, dy: -6, lift: 6 },
+      tier3: CHAMPION_FORM,
+      tier4: CHAMPION_FORM,
     },
-    lineup: { ground: 'ground', flipWeapons: true },
+    lineup: { ground: 'ground', dim: '#5c5040', flipWeapons: true },
     heroNames: {
       tier1: 'Young Hero',
       tier2: 'Blue Ring Hero',
@@ -523,27 +742,27 @@ export const zelda: Theme = {
       unknown: 'Hooded Traveler',
     },
     weapons: {
-      low: { sprite: 'sword', swap: { E: 'wood', T: 'wood', F: 'woodDark' }, name: 'Wooden Sword' },
-      medium: { sprite: 'sword', swap: { E: 'steel', T: 'W', F: 'steelDark' }, name: 'White Sword' },
-      high: { sprite: 'sword', swap: { E: 'magic', T: 'W', F: 'magicDark' }, name: 'Magical Sword' },
-      xhigh: { sprite: 'sword', swap: { E: 'master', T: 'W', F: 'masterGuard' }, name: 'Master Sword' },
-      max: { sprite: 'sword', swap: { E: 'master', T: 'aura', F: 'masterGuard' }, aura: 'aura', name: 'Master Sword, awakened' },
+      low: { sprite: 'sword', swap: { E: 'wood', T: 'wood', F: 'woodDark' }, poses: { diag: { sprite: 'swordDiag' } }, name: 'Wooden Sword' },
+      medium: { sprite: 'sword', swap: { E: 'steel', T: 'W', F: 'steelDark' }, poses: { diag: { sprite: 'swordDiag' } }, name: 'White Sword' },
+      high: { sprite: 'sword', swap: { E: 'magic', T: 'W', F: 'magicDark' }, poses: { diag: { sprite: 'swordDiag' } }, name: 'Magical Sword' },
+      xhigh: { sprite: 'sword', swap: { E: 'master', T: 'W', F: 'masterGuard' }, poses: { diag: { sprite: 'swordDiag' } }, name: 'Master Sword' },
+      max: { sprite: 'sword', swap: { E: 'master', T: 'aura', F: 'masterGuard' }, aura: 'aura', poses: { diag: { sprite: 'swordDiag', aura: 'auraDiag' } }, name: 'Master Sword, awakened' },
     },
     bar: {
       widgets: [
         { kind: 'map', drop: 2 },
-        { kind: 'counter', value: 'spend', icon: 'miniRupee', format: 'X{v}' },
+        { kind: 'counter', value: 'spend', icon: 'miniRupee', format: 'x{v}' },
         { kind: 'box', shows: 'model', sprite: 'ring', label: 'B', drop: 1 },
         { kind: 'box', shows: 'effort', sprite: 'miniSword', label: 'A', x: 3, y: 4 },
-        { kind: 'meter', value: 'contextLeft', count: 10, perRow: 5, sprites: ['heart0', 'heart1', 'heart2', 'heart3', 'heart4'], label: '-LIFE-', pulseBelow: 0.2 },
+        { kind: 'meter', value: 'contextLeft', count: 10, perRow: 5, sprites: ['heart0', 'heart1', 'heart2', 'heart3', 'heart4'], label: '-LIFE-', pulseBelow: 0.2, wrap: true },
       ],
-      colors: { bg: 'black', box: 'boxBlue', text: 'W', label: 'r', map: 'mapGrey', mapDot: 'u' },
+      colors: { bg: 'black', box: 'boxBlue', text: 'W', label: 'barRed', map: 'mapGrey', mapDot: 'u' },
     },
     stamina: { x: 1, y: 12, radius: 5, full: 'staminaFull', empty: 'staminaEmpty', cold: 'staminaCold', tagIcon: 'miniRupee' },
   },
   text: {
     idle: 'The hero naps by the campfire.',
-    thinking: 'The hero ponders the map...',
+    thinking: 'The hero ponders the way ahead...',
     reading: 'The hero cuts through tall grass.',
     editing: 'The hero strikes the stone.',
     shell: 'The hero lights the torches.',
@@ -553,7 +772,7 @@ export const zelda: Theme = {
     turnComplete: 'You found a Triforce shard!',
     milestone: 'A milestone passes.',
     cacheCold: 'The campfire went out.',
-    limitWarning: 'The sands of time run low.',
+    limitWarning: 'The hourglass runs low.',
     compaction: 'The hero drinks a red potion.',
     modelChange: 'A new hero appears!',
     effortChange: 'The hero takes up a new sword!',
@@ -569,7 +788,7 @@ export const zelda: Theme = {
   messages: {
     cacheCold: 'THE CAMPFIRE WENT OUT. YOUR CACHE IS COLD.',
     limitWarning: 'THE SANDS RUN LOW. {name} AT {pct}%.',
-    compaction: 'You drank a red potion. Hearts restored!',
+    compaction: 'You drank a red potion: context compacted, hearts restored!',
     modelChange: '{name} appears!',
     effortChange: 'You got the {weapon}!',
   },

@@ -4,6 +4,7 @@ import {
   bandSegments,
   bar,
   cacheInfo,
+  confirmTtl,
   countKind,
   detectTtl,
   fitSegments,
@@ -103,6 +104,31 @@ describe('cost', () => {
   test('no verdict when too little was written', () => {
     const tiny = [{ ...main[1]!, cache_creation_input_tokens: 100 }]
     expect(detectTtl(0.03, tiny, [], 1)).toBe(null)
+  })
+  test('no verdict when the two costs are too close to call', () => {
+    // A long session: half a million tokens re-read, about a thousand written. The 1h and 5m
+    // costs differ by under 3%, so a delta between them would fit both.
+    const big = [{ model: 'claude-opus-5-5', input_tokens: 2, output_tokens: 400, cache_read_input_tokens: 560_000, cache_creation_input_tokens: 1200 }]
+    const p = priceFor('claude-opus-5-5', 1)!
+    const cost = (write: number) => (2 * p.input + 400 * p.output + 560_000 * p.read + 1200 * write) / 1e6
+    expect((cost(p.write1h) - cost(p.write5m)) / cost(p.write1h) < 0.03).toBe(true)
+    expect(detectTtl(cost(p.write1h), big, [], 1)).toBe(null)
+    expect(detectTtl(cost(p.write5m), big, [], 1)).toBe(null)
+  })
+  test('a verdict that would change the TTL waits for a second turn to agree', () => {
+    // Nothing detected yet: 1h is assumed, so a 1h verdict settles at once and a 5m one waits.
+    expect(confirmTtl(null, null, '1h')).toEqual({ detected: '1h', pending: null })
+    expect(confirmTtl(null, null, '5m')).toEqual({ detected: null, pending: '5m' })
+    expect(confirmTtl(null, '5m', '5m')).toEqual({ detected: '5m', pending: null })
+    // One stray 5m turn in a 1h session changes nothing; the next 1h verdict clears it.
+    expect(confirmTtl('1h', null, '5m')).toEqual({ detected: '1h', pending: '5m' })
+    expect(confirmTtl('1h', '5m', '1h')).toEqual({ detected: '1h', pending: null })
+    expect(confirmTtl('1h', '5m', '5m')).toEqual({ detected: '5m', pending: null })
+    // And back again the same way (a session that returns to 1h).
+    expect(confirmTtl('5m', null, '1h')).toEqual({ detected: '5m', pending: '1h' })
+    expect(confirmTtl('5m', '1h', '1h')).toEqual({ detected: '1h', pending: null })
+    // A turn without a verdict leaves everything as it is.
+    expect(confirmTtl('1h', '5m', null)).toEqual({ detected: '1h', pending: '5m' })
   })
 })
 

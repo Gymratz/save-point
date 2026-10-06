@@ -49,13 +49,12 @@ export class Canvas {
   /** Draws `sprite` with its top-left at (x, y); `swap` renames palette entries first. */
   sprite(s: Sprite | undefined, x: number, y: number, pixels: Palette, swap: Record<string, string> = {}, flip = false, flipY = false, tint?: (c: number) => number) {
     if (!s) return
-    const legend = s.legend ?? {}
     const h = s.rows.length
     s.rows.forEach((row, j) => {
       const chars = [...row]
       chars.forEach((ch, i) => {
-        const name = ch in legend ? legend[ch] : ch === '.' || ch === ' ' ? null : ch
-        if (name === null || name === undefined) return
+        const name = pixelName(s, ch)
+        if (name === null) return
         const raw = hex(pixels[swap[name] ?? name] ?? name)
         const color = raw !== null && tint ? tint(raw) : raw
         this.set(x + (flip ? chars.length - 1 - i : i), y + (flipY ? h - 1 - j : j), color)
@@ -123,6 +122,30 @@ export function toBase64(bytes: Uint8Array): string {
   return out
 }
 
+/** The palette name a sprite's character draws with; null when it is transparent. */
+export function pixelName(s: Sprite, ch: string): string | null {
+  const legend = s.legend
+  if (legend && ch in legend) return legend[ch] ?? null
+  return ch === '.' || ch === ' ' ? null : ch
+}
+
+const inks = new WeakMap<Sprite, { x0: number; y0: number; x1: number; y1: number } | null>()
+
+/** The box around a sprite's drawn pixels (`x1`, `y1` exclusive); null when it draws nothing. */
+export function inkBox(s: Sprite): { x0: number; y0: number; x1: number; y1: number } | null {
+  const hit = inks.get(s)
+  if (hit !== undefined) return hit
+  let box: { x0: number; y0: number; x1: number; y1: number } | null = null
+  s.rows.forEach((row, j) => {
+    ;[...row].forEach((ch, i) => {
+      if (pixelName(s, ch) === null) return
+      box = box ? { x0: Math.min(box.x0, i), y0: Math.min(box.y0, j), x1: Math.max(box.x1, i + 1), y1: Math.max(box.y1, j + 1) } : { x0: i, y0: j, x1: i + 1, y1: j + 1 }
+    })
+  })
+  inks.set(s, box)
+  return box
+}
+
 /** Width and height in pixels of a sprite. */
 export function size(s: Sprite | undefined): { w: number; h: number } {
   if (!s) return { w: 0, h: 0 }
@@ -135,6 +158,22 @@ export function size(s: Sprite | undefined): { w: number; h: number } {
  * result rests on the ground.
  */
 export function rotate(s: Sprite, dir: 'cw' | 'ccw'): Sprite {
+  const rows = [...quarter(s, dir).rows]
+  const blank = (r: string) => /^[. ]*$/.test(r)
+  while (rows.length && blank(rows[0]!)) rows.shift()
+  while (rows.length && blank(rows[rows.length - 1]!)) rows.pop()
+  return { rows, ...(s.legend ? { legend: s.legend } : {}) }
+}
+
+const quarters = new WeakMap<Sprite, { cw?: Sprite; ccw?: Sprite }>()
+
+/**
+ * A sprite turned a quarter, every pixel kept (w x h becomes h x w): `cw`
+ * points its top to the right, `ccw` to the left. Turned once per sprite.
+ */
+export function quarter(s: Sprite, dir: 'cw' | 'ccw'): Sprite {
+  const hit = quarters.get(s)?.[dir]
+  if (hit) return hit
   const grid = s.rows.map(r => [...r])
   const h = grid.length
   const w = Math.max(0, ...grid.map(r => r.length))
@@ -145,8 +184,7 @@ export function rotate(s: Sprite, dir: 'cw' | 'ccw'): Sprite {
     for (let x = 0; x < h; x++) row += dir === 'ccw' ? at(w - 1 - y, x) : at(y, h - 1 - x)
     rows.push(row)
   }
-  const blank = (r: string) => /^[. ]*$/.test(r)
-  while (rows.length && blank(rows[0]!)) rows.shift()
-  while (rows.length && blank(rows[rows.length - 1]!)) rows.pop()
-  return { rows, ...(s.legend ? { legend: s.legend } : {}) }
+  const turned: Sprite = { rows, ...(s.legend ? { legend: s.legend } : {}) }
+  quarters.set(s, { ...quarters.get(s), [dir]: turned })
+  return turned
 }

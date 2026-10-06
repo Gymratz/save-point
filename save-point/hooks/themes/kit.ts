@@ -7,17 +7,23 @@ import type { Actor, Animation, Frame } from './types'
 /** The hero in a pose (`stand`, `attack`...), with palette swaps for this frame only. */
 export const hero = (pose: string, x = 0, y = 0, swap?: Record<string, string>): Actor => ({ sprite: `@${pose}`, x, y, swap })
 
+/** Everything an actor may carry besides its sprite and place (`tiers`, `fixed`, `flip`, `turn`, `backdrop`...). */
+type ActorOptions = Partial<Omit<Actor, 'sprite' | 'x' | 'y'>>
+
 /** The weapon of the current effort tier. */
-export const weapon = (x: number, y: number, opts: { flip?: boolean; flipY?: boolean } = {}): Actor => ({ sprite: '@weapon', x, y, ...opts })
+export const weapon = (x: number, y: number, opts: ActorOptions = {}): Actor => ({ sprite: '@weapon', x, y, ...opts })
 
 /** A plain sprite. */
-export const at = (sprite: string, x: number, y: number, opts: { swap?: Record<string, string>; flip?: boolean; flipY?: boolean; fixed?: boolean } = {}): Actor => ({ sprite, x, y, ...opts })
+export const at = (sprite: string, x: number, y: number, opts: ActorOptions = {}): Actor => ({ sprite, x, y, ...opts })
 
 /** An activity loop. */
 export const loop = (...frames: Frame[]): Animation => ({ frames, loop: true })
 
 /** A one-shot moment: plays once, holding its last frame. */
 export const once = (...frames: Frame[]): Animation => ({ frames, loop: false })
+
+/** Several takes of one state or moment: one is picked each time it plays, never the same twice running. */
+export const oneOf = (first: Animation, ...others: Animation[]): Animation => ({ ...first, variants: others.map(a => a.frames) })
 
 /** `a` blended `t` (0..1) of the way to `b`, colors as 0xrrggbb. */
 export function mix(a: number, b: number, t: number): number {

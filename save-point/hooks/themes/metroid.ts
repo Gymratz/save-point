@@ -1,18 +1,19 @@
 // "Context Prime": a bounty-hunter homage. Every sprite is drawn fresh for this
 // theme in a 16-bit style.
 //
-// The model is the suit (Power, Varia, Gravity, Chozo Light), effort is the
+// The model is the suit (Power, Varia, Gravity, Light), effort is the
 // beam, context is energy tanks, the cache is the charge, cents are missiles.
 //
 // Sprites are rows of characters; each character is a key of `pixels` below
 // (so 'A' is the suit). Suit tiers and beams recolor by swapping keys.
 //
 // Pose notes: `sleep` is the morph ball (the hunter curled up), so the ball
-// wears the tier's suit colors; `lie` is the reveal: helmet off, resting at a
-// save station.
+// wears the tier's suit colors, and `roll` is the ball a quarter turn on;
+// `lie` is the reveal: helmet off, resting at a save station.
 
 import { at, hero, loop, once, weapon } from './kit'
-import type { Sprite, Theme } from './types'
+import { quarter } from './pixel'
+import type { Actor, HeroTier, Sprite, Theme } from './types'
 
 const pixels = {
   // The suit (Power Suit colors; tiers swap these)
@@ -55,8 +56,11 @@ const pixels = {
   protoY: '#d0d0d8',
   protoy: '#8a8a96',
   protoV: '#78a878',
+  protoG: '#6a7088', // its cannon, darker than the grey suit
+  protog: '#44445c',
   hurtA: '#fcfcfc',
   hurtB: '#f03850',
+  hurtC: '#901030',
   glowA: '#fff8d0',
   glowB: '#fce060',
   // Beams (the weapon keys P core, p body, Q fringe)
@@ -99,6 +103,7 @@ const pixels = {
   O: '#58f0a0', // save glow
   o: '#20a868',
   w: '#d8fff0', // save beam core
+  scan: '#1c4670', // the scan visor's light
   // Creatures
   N: '#90f0b0', // metroid membrane
   u: '#40b878',
@@ -127,8 +132,6 @@ const pixels = {
   chargeFull: '#80f0ff',
   chargeEmpty: '#1c2c48',
   chargeCold: '#4c4c5c',
-  plate: '#b8b4c8',
-  plateLo: '#6c6880',
 }
 
 /** A sprite whose rows are padded to one width. */
@@ -144,8 +147,8 @@ function edit(rows: string[], changes: Record<number, string>): string[] {
 
 // ---------------------------------------------------------------------------
 // The hunter. Three builds: the standard 16x16 (Power Suit, Prototype), the
-// Varia build with round pauldrons (18x18), the Gravity build (22x22) that
-// Opus and the legendary suit wear.
+// Varia build with round pauldrons (19x18), the Gravity build (25x24) that
+// Opus and the Light Suit wear.
 // ---------------------------------------------------------------------------
 
 const STD = [
@@ -319,7 +322,7 @@ const GRAND_FRONT = edit(
     '......KKKKKK',
   ]),
   {
-    6: '.......KYVvvVVVVYK.......',
+    6: '.......KYVvvVVVYK.......',
     16: '...KAAAKaAAYYAAaKGGGGK...',
     17: '...KAAAKKaYYYYaKKGGGGK...',
     18: '...KYYYK.KaLLaK.KggggK...',
@@ -327,8 +330,9 @@ const GRAND_FRONT = edit(
   },
 )
 
-// The reveal: helmet off, ponytail down her back, sitting against the save
-// station with the helmet set down beside her.
+// The reveal: helmet off, ponytail down her back, sitting with her back against
+// the save station; the helmet is its own sprite, set down by her boots. `pad`
+// columns on the left put each build's sprite where the standard one sits.
 const HAIR = [
   '.....HHHH.....',
   '....HHHHHHH...',
@@ -338,18 +342,20 @@ const HAIR = [
   '.hH..HhSSSs...',
   '.hH...KSSK....',
 ]
-const sit = (torso: string[]) =>
-  S([
-    ...HAIR,
-    ...torso,
-    '.....KaAAAAAaKKaaK.......',
-    '.....KaaaaaaK.KYYK.KKKK..',
-    '.....KKKKKKKK.KYYYKAAAAK.',
-    '..............KKKKKVvVVK.',
-  ])
+const sit = (torso: string[], pad = 0) =>
+  S(
+    [
+      ...HAIR,
+      ...torso,
+      '.....KaAAAAAaKKaaK.',
+      '.....KaaaaaaK.KYYK.',
+      '.....KKKKKKKK.KYYYK',
+      '..............KKKKK',
+    ].map(r => '.'.repeat(pad) + r),
+  )
 const SIT_STD = sit(['.h...KYYKAK......', '.hH.KYyYKAAK..KK.', '.h..KYyYKAAAKKAAK', '.h..KYYKAAAAAAAAK'])
-const SIT_VARIA = sit(['.h.KKYYYKAK......', '.hKYYyyYYKAK..KK.', '.hKYyyyYKAAAKKAAK', '.h.KYYYKAAAAAAAAK'])
-const SIT_GRAND = sit(['.hKKYYYYKLK......', '.KYYyyyyYKAK..KK.', '.KYyyyyyYKALKKAAK', '.hKYYYYKAAAAAAAAK'])
+const SIT_VARIA = sit(['.h.KKYYYKAK......', '.hKYYyyYYKAK..KK.', '.hKYyyyYKAAAKKAAK', '.h.KYYYKAAAAAAAAK'], 1)
+const SIT_GRAND = sit(['.hKKYYYYKLK......', '.KYYyyyyYKAK..KK.', '.KYyyyyyYKALKKAAK', '.hKYYYYKAAAAAAAAK'], 4)
 
 const BALL = [
   '..KKKK..',
@@ -369,10 +375,75 @@ const BIG_BALL = [
   'KAAALLLAaK',
   'KAAAALAaaK',
   'KyAAAAaaaK',
-  '.KyAaaaayK',
-  '.KKyaaayKK',
+  '.KyAaaayK.',
+  '.KKyaayKK.',
   '...KKKK...',
 ]
+
+/** A blast hatch as tall as the Gravity build: its frame around three columns of `body`, 22 rows top to bottom. */
+const hatch = (body: (k: number) => string) => S(['.nnnn', ...Array.from({ length: 22 }, (_, k) => `n${body(k)}n`), '.nnnn'])
+
+// A pillar of Chozo lore: its glyphs light from the top as the scan goes on.
+const LORE = [
+  '.CCCCCC.',
+  'CCCCCCCC',
+  'CjjjCjCC',
+  'CCCjCjCC',
+  'CjCjCCjC',
+  'CjCCCjjC',
+  'CCCCCCCC',
+  'CCjjjCjC',
+  'CjCCCCjC',
+  'CjCjjCCC',
+  'CCCCCCCC',
+  'CjjCCjjC',
+  'CCjCjCCC',
+  'CjjCjjCC',
+  'CCCCCCCC',
+  'CjCjjjCC',
+  'CjCCCjCC',
+  'CCjjCCjC',
+  'CCCCCCCC',
+  'CCCCCCCC',
+  'jCCCCCCj',
+  'jjjjjjjj',
+]
+const lore = (lit: number) => S(LORE.map((r, k) => (k < lit ? r.split('j').join('i') : r)), { i: 'icep' })
+
+/**
+ * The scan visor's light: a wedge `length` long from its tip at the left,
+ * rising `rise` pixels on the way and opening to `spread` either side. `tip`
+ * is the row of the tip.
+ */
+function cone(length: number, rise: number, spread: number): { sprite: Sprite; tip: number } {
+  const cols = Array.from({ length }, (_, k) => {
+    const t = k / (length - 1)
+    const mid = -Math.round(t * rise)
+    const half = Math.round(t * spread)
+    return { top: mid - half, bottom: mid + half }
+  })
+  const top = Math.min(...cols.map(c => c.top))
+  const bottom = Math.max(...cols.map(c => c.bottom))
+  const rows = Array.from({ length: bottom - top + 1 }, (_, j) =>
+    cols
+      .map((c, k) => {
+        const y = j + top
+        if (y < c.top || y > c.bottom) return '.'
+        if (k === 0) return 'i'
+        if (y === c.top || y === c.bottom) return 'c'
+        // The far end thins out: light, not a solid thing.
+        return k < length - 4 || (k + y) % 2 === 0 ? 'f' : '.'
+      })
+      .join(''),
+  )
+  return { sprite: { rows, legend: { i: 'iceP', c: 'icep', f: 'scan' } }, tip: -top }
+}
+const SCAN_LEVEL = cone(14, 0, 4)
+const SCAN_UP = cone(14, 6, 3)
+
+/** The recharge station's light, floor to emitter: the same four rows of drops, `phase` rows further down. */
+const RAIN = ['.O...o...O...o...O..', '...o...O...o...O...o', '.o...O...o...O...o..', '...O...o...O...o...O']
+const rain = (phase: number) => S(Array.from({ length: 27 }, (_, k) => RAIN[(k + 4 - phase) % 4]!))
 
 const sprites: Theme['sprites'] = {
   stand: S(STD),
@@ -380,6 +451,7 @@ const sprites: Theme['sprites'] = {
   attack: S(STD_ATTACK),
   itemGet: S(STD_FRONT),
   ball: S(BALL),
+  ball2: quarter(S(BALL), 'cw'),
   lie: SIT_STD,
   variaStand: S(VARIA),
   variaWalk: S(VARIA_WALK),
@@ -389,18 +461,21 @@ const sprites: Theme['sprites'] = {
   grandStand: S(lower(GRAND)),
   grandWalk: S(lower(GRAND_WALK)),
   grandAttack: S(lower(GRAND_ATTACK)),
-  grandItemGet: S(lower(GRAND_FRONT)),
+  grandItemGet: S(GRAND_FRONT),
   grandLie: SIT_GRAND,
   bigBall: S(BIG_BALL),
+  bigBall2: quarter(S(BIG_BALL), 'cw'),
+  // Her helmet, set down (it wears the suit's colors)
+  helmetOff: S(['..KKKKK..', '.KAAAAAK.', 'KAAAAAAAK', 'KAAAKVVVK', 'KAAKVvVVV', 'KaAKVVVVV', 'KaaAKKKKK', '.KKKK....']),
 
-  // Beams, pointing right (the lineup turns them upright)
-  beamPower: S(['.pp.', 'pPPp', 'pPPp', '.pp.']),
-  beamWave: S(['.p.....p', 'pPp...pP', '...pPp..', '....p...']),
-  beamIce: S(['..p...', '.pPp..', 'pPPPPQ', '.pPp..', '..p...']),
-  beamPlasma: S(['.ppppppp.', 'pPPPPPPPp', '.ppppppp.']),
-  beamHyper: S(['..23456...', '.1PPPPPP6.', '6PPPPPPPP1', '.5PPPPPP2.', '...43216..'], { 1: 'r1', 2: 'r2', 3: 'r3', 4: 'r4', 5: 'r5', 6: 'r6' }),
-  hyperAura: S(['.a.a.a.a.a', 'a........a', '..........', '..........', 'a........a', '.a.a.a.a.a'], { a: 'aura' }),
-  // A charged shot gathering at the muzzle
+  // Beams, flying right. Every beam is five rows with its middle on the third, so one height serves all.
+  beamPower: S(['.....', '.ppp.', 'pPPPp', '.ppp.', '.....']),
+  beamWave: S(['..pp....', '.pPPp..p', 'pP..Pp.P', 'p....PPp', '......p.']),
+  beamIce: S(['.Qpp....', 'QpPPpp..', 'pPPPPPPp', 'QpPPpp..', '.Qpp....']),
+  beamPlasma: S(['........', 'Qpppppp.', 'pPPPPPPp', 'Qpppppp.', '........']),
+  beamHyper: S(['.23456.', '1PPPPP1', '6PPPPP2', '5PPPPP3', '.43216.'], { 1: 'r1', 2: 'r2', 3: 'r3', 4: 'r4', 5: 'r5', 6: 'r6' }),
+  hyperAura: S(['.a.a.a.a.', 'a.......a', '.........', 'a.......a', '.........', 'a.......a', '.a.a.a.a.'], { a: 'aura' }),
+  // A shot gathering at the muzzle, in the beam's colors
   charge1: S(['.p.', 'pPp', '.p.']),
   charge2: S(['.Q.Q.', 'QpPpQ', '.PPP.', 'QpPpQ', '.Q.Q.']),
 
@@ -419,36 +494,45 @@ const sprites: Theme['sprites'] = {
     'RRRRRRRRRRRRRRRR',
   ], { q: 'rockHi', r: 'rock', R: 'rockLo' }),
   weed: S(['.g..', '.g.g', 'g.gg', 'gggg'], { g: 'moss' }),
-  sporePod: S(['.gG.', 'gGGg', '.gg.', '..g.', '..g.'], { g: 'moss', G: 'mossHi' }),
+  // Spore pods hang from the longest stalactites (every 16 columns, at x 5).
+  pod: S(['..g..', '..g..', '.gGg.', 'gGOGg', 'gGGGg', '.ggg.'], { g: 'moss', G: 'mossHi' }),
+  podPair: S(['..g....', '..g....', '.gGg.g.', 'gGOGgg.', 'gGGGgGg', '.gggGOG', '....gGg'], { g: 'moss', G: 'mossHi' }),
+  stalagmite: S(['..q..', '..r..', '.qr..', '.rrR.', '.rrR.', 'qrrRR', 'rrrRR'], { q: 'rockHi', r: 'rock', R: 'rockLo' }),
   chozo: S([
-    '.....CCC....',
-    '....CCCCC...',
-    '...jjCKCC...',
-    '..jj.CCCC...',
-    '.....jCCC...',
-    '....CCCCCC..',
-    '...CCjCCCCC.',
-    '..CCCjjCCCC.',
-    '.OOCCjCCCCC.',
-    '.ooCjCCCCCC.',
-    '...CCCCCjCC.',
-    '..CCCCCCCjC.',
-    '.jCCjjjCCCCj',
-    'jjjjjjjjjjjj',
+    '....CCC..',
+    '...CCCCC.',
+    '..jjCKCC.',
+    '.jj.CCCC.',
+    '....jCCC.',
+    '...CCCCCC',
+    '..CCjCCCC',
+    '.CCCjjCCC',
+    'OOCCjCCCC',
+    'ooCjCCCCC',
+    '..CCCCCjC',
+    '.CCCCCCCj',
+    'jCCjjjCCC',
+    'jjjjjjjjj',
   ], { O: 'gravY', o: 'gravy' }),
-  // The charge orb's console: the price tag sits on it
-  console: S([
-    'nnnnnnnnnnnn',
-    'nMMMMMMMMMMn',
-    'nMMMMMMMMMMn',
-    'nMMMMMMMMMMn',
-    'nmmmmmmmmmmn',
-    '.n........n.',
-    '.n........n.',
-    '.n........n.',
-    '.n........n.',
-    'nnn......nnn',
-  ], { M: 'plate', m: 'plateLo' }),
+  // The gunship, landed
+  ship: S([
+    '........KKKK........',
+    '......KKAAAAKK......',
+    '....KKAAAAAAAAKK....',
+    '...KAAAAAAAAAAAAK...',
+    '..KAAAAAAAAAAAAAAK..',
+    '.KAAAKKKKKKKKKKAAAK.',
+    'KYAAKVVVVvvVVVVKAAYK',
+    'KYAAKVVVVVVVVVVKAAYK',
+    'KYYAAKKKKKKKKKKAAYYK',
+    'KyYYAAAAAAAAAAAAYYyK',
+    '.KyyYYYYaaaaYYYYyyK.',
+    '..KKKaaKKKKKKaaKKK..',
+    '...mm....mm....mm...',
+    '..mmm....mm....mmm..',
+  ]),
+  // An energy tank on its stand
+  tankStand: S(['.nMMn.', 'nEEEEn', 'nETEEn', 'nEEEEn', '.nMMn.', '..nn..', '..nn..', '.nnnn.', 'nnnnnn'], { E: 'tankFull' }),
 
   // The save station: a pad and a capsule of light
   saveOn1: S([
@@ -493,71 +577,22 @@ const sprites: Theme['sprites'] = {
     'nnnnnnnnnnnn',
     'nmmmmmmmmmmn',
   ]),
-  // The energy recharge station: a column pouring light down on her
+  // The energy recharge station: an emitter on a pipe from the ceiling, pouring light to the floor
   rechargeTop: S([
-    'nnnnnnnnnnnnnnnnnnnn',
-    '.nMMMMMMMMMMMMMMMMn.',
-    '..nmmmmmmmmmmmmmmn..',
-    '....O..O..O..O.O....',
+    'nnnnnnnnnnnnnnnnnnnnnnnn',
+    '.nMMMMMMMMMMMMMMMMMMMMn.',
+    '..nmmmmmmmmmmmmmmmmmmn..',
+    '....O..O..O..O..O..O....',
   ]),
-  rechargeRain1: S(['.O...o...O...o..', '...o...O...o...O', '.o...O...o...O..', '...O...o...O...o']),
-  rechargeRain2: S(['...o...O...o...O', '.O...o...O...o..', '...O...o...O...o', '.o...O...o...O..']),
+  rechargePipe: S(Array.from({ length: 21 }, () => 'nMmn')),
+  rechargeRain1: rain(0),
+  rechargeRain2: rain(1),
+  rechargeRain3: rain(2),
 
   // A blast hatch: closed, flashing, open
-  hatch: S([
-    '.nnnn',
-    'nMBBn',
-    'nBcBn',
-    'nBcBn',
-    'nBBBn',
-    'nBBbn',
-    'nBBbn',
-    'nBBbn',
-    'nBBbn',
-    'nBBbn',
-    'nBbbn',
-    'nBbbn',
-    'nBbbn',
-    'nbbbn',
-    'nMbbn',
-    '.nnnn',
-  ]),
-  hatchFlash: S([
-    '.nnnn',
-    'nTTTn',
-    'nTcTn',
-    'nTcTn',
-    'nTTTn',
-    'nTTcn',
-    'nTTcn',
-    'nTTcn',
-    'nTTcn',
-    'nTTcn',
-    'nTccn',
-    'nTccn',
-    'nTccn',
-    'nTccn',
-    'nTccn',
-    '.nnnn',
-  ]),
-  hatchOpen: S([
-    '.nnnn',
-    'nM..n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'n...n',
-    'nM..n',
-    '.nnnn',
-  ]),
+  hatch: hatch(k => (k === 0 ? 'MBB' : k < 4 ? 'BcB' : k === 4 ? 'BBB' : k < 14 ? 'BBb' : k < 21 ? 'Bbb' : 'Mbb')),
+  hatchFlash: hatch(k => (k === 0 ? 'TTT' : k < 4 ? 'TcT' : k === 4 ? 'TTT' : k < 14 ? 'TTc' : 'Tcc')),
+  hatchOpen: hatch(k => (k === 0 || k === 21 ? 'M..' : '...')),
 
   // Bomb blocks
   blocks: S([
@@ -590,276 +625,289 @@ const sprites: Theme['sprites'] = {
   boom3: S(['x.....x', '...x...', '.x...x.', 'x.....x', '.x...x.', '...x...', 'x.....x']),
 
   // Scanning
-  scanCone1: S(['.....c', '...cc.', 'icc...', '...cc.', '.....c'], { c: 'icep', i: 'iceP' }),
-  scanCone2: S(['.........c', '......cc..', '...cc.....', 'icc.......', '...cc.....', '......cc..', '.........c'], { c: 'icep', i: 'iceP' }),
-  scanCone3: S([
-    '.............c',
-    '..........cc..',
-    '.......cc.....',
-    '....cc........',
-    'icc...........',
-    '....cc........',
-    '.......cc.....',
-    '..........cc..',
-    '.............c',
-  ], { c: 'icep', i: 'iceP' }),
-  tablet: S([
-    '.CCCCCC.',
-    'CCjCCjCC',
-    'CjjCCjjC',
-    'CCCjjCCC',
-    'CjCCCCjC',
-    'CCjjjjCC',
-    'CCCCCCCC',
-    'CjCjjCjC',
-    'CCCCCCCC',
-    'jjjjjjjj',
-  ]),
-  tabletLit: S([
-    '.CCCCCC.',
-    'CCiCCiCC',
-    'CiiCCiiC',
-    'CCCiiCCC',
-    'CiCCCCiC',
-    'CCiiiiCC',
-    'CCCCCCCC',
-    'CiCiiCiC',
-    'CCCCCCCC',
-    'jjjjjjjj',
-  ], { i: 'icep' }),
-  reticle: S([
-    'ii........ii',
-    'i..........i',
-    '............',
-    '............',
-    '............',
-    '............',
-    '............',
-    '............',
-    '............',
-    '............',
-    'i..........i',
-    'ii........ii',
-  ], { i: 'iceP' }),
-  scanBar1: S(['iiiiiiiiii', 'iccooooooi', 'iiiiiiiiii'], { i: 'n', c: 'icep', o: 'rockLo' }),
-  scanBar2: S(['iiiiiiiiii', 'iccccooooi', 'iiiiiiiiii'], { i: 'n', c: 'icep', o: 'rockLo' }),
-  scanBar3: S(['iiiiiiiiii', 'iccccccooi', 'iiiiiiiiii'], { i: 'n', c: 'icep', o: 'rockLo' }),
-  scanBar4: S(['iiiiiiiiii', 'icccccccci', 'iiiiiiiiii'], { i: 'n', c: 'icep' }),
+  scanLevel: SCAN_LEVEL.sprite,
+  scanUp: SCAN_UP.sprite,
+  lore0: lore(0),
+  lore1: lore(7),
+  lore2: lore(13),
+  lore3: lore(20),
 
   // Creatures
-  metroid1: S([
-    '...NNNNN...',
-    '.NNuNNNuNN.',
-    'NNRRNuNRRNN',
-    'NRrRNNNRrRN',
-    'NNRRNNNRRNN',
-    '.NNNNNNNNN.',
-    '..T.T.T.T..',
-    '..T.....T..',
-  ]),
-  metroid2: S([
-    '...NNNNN...',
-    '.NNuNNNuNN.',
-    'NNRRNuNRRNN',
-    'NRrRNNNRrRN',
-    'NNRRNNNRRNN',
-    '.NNNNNNNNN.',
-    '.T..T.T..T.',
-    'T.........T',
-  ]),
-  crawler1: S(['.z.z.z..', 'zZZZZZz.', 'ZZKZZZZz', 'ZZZZZZZZ', '.KK..KK.']),
-  crawler2: S(['z.z.z.z.', '.ZZZZZZz', 'zZKZZZZZ', 'ZZZZZZZZ', 'K..KK..K']),
+  baby1: S(['..NNN..', '.NNuNN.', 'NRRNRRN', 'NNNNNNN', '.NNNNN.', '.T.T.T.']),
+  baby2: S(['..NNN..', '.NNuNN.', 'NRRNRRN', 'NNNNNNN', '.NNNNN.', 'T..T..T']),
+  crawler1: S(['..z..z..', '.zZzzZz.', 'zZZZZZZz', 'ZZKZZKZZ', 'ZZZZZZZZ', 'zZZZZZZz', '.KK..KK.']),
+  crawler2: S(['.z..z..z', '.zZzzZz.', 'zZZZZZZz', 'ZKZZKZZZ', 'ZZZZZZZZ', 'zZZZZZZz', 'K..KK..K']),
   energyDrop: S(['.R.', 'RTR', '.R.']),
 
   // Rewards
   itemSphere1: S(['..pppp..', '.pPPPPp.', 'pPTPPPPp', 'pPPQQPPp', 'pPPQQPPp', 'pPPPPPPp', '.pPPPPp.', '..pppp..'], { p: 'gravy', P: 'gravY', Q: 'R', T: 'T' }),
   itemSphere2: S(['..pppp..', '.pPPPPp.', 'pPTPPPPp', 'pPPRRPPp', 'pPPRRPPp', 'pPPPPPPp', '.pPPPPp.', '..pppp..'], { p: 'variay', P: 'variaY', R: 'T', T: 'T' }),
+  itemStand: S(['.mMMMMm.', '..nmmn..', '..nmmn..', '.nmmmmn.', 'mmmmmmmm']),
   sparkle: S(['..T..', '..T..', 'TTXTT', '..T..', '..T..']),
   alarm1: S(['.RR.', 'RTTR', 'RRRR', 'nnnn']),
   alarm2: S(['.rr.', 'rRRr', 'rrrr', 'nnnn']),
-  sweat: S(['.d.', 'ddd', '.d.']),
+  sweat: S(['..d..', '..d..', '.ddd.', 'dTddd', 'ddddd', '.ddd.']),
 
   // Status bar
   tank0: S(['ooo', 'ooo', 'ooo', '...'], { o: 'tankEmpty' }),
   tank1: S(['ooo', 'fff', 'fff', '...'], { o: 'tankEmpty', f: 'tankHalf' }),
   tank2: S(['fff', 'fff', 'fff', '...'], { f: 'tankFull' }),
-  missile: S(['.T.', 'TGT', 'GGG', 'GgG', 'GgG', 'x.x'].map(r => r), { T: 'T', G: 'G', g: 'g', x: 'x' }),
+  missile: S(['.T.', 'TGT', 'GGG', 'GgG', 'GgG', 'x.x']),
   helmet: S(['.KKK.', 'KAAAK', 'AAVVK', 'AVvVK', 'aaVVK', '.aaa.']),
-  miniBeam: S(['.pp.', 'pPPp', 'pPPp', '.pp.']),
+  miniBeam: S(['.ppp.', 'pPPPp', 'pPPPp', '.ppp.']),
 }
 
 // ---------------------------------------------------------------------------
-// Frames: actors are placed relative to the hero's top-left.
+// Frames. The scene is laid out once, in scene pixels at the design height:
+// the charge ring and its price own columns 0..11, the hunter stands from 12
+// (the Gravity build is 12..35, its muzzle flash to 37) and whatever she works
+// on is at 38..45, so the action is whole in a pane 48 columns wide.
 // ---------------------------------------------------------------------------
 
-/** A beam shot from the arm cannon. */
-const shot = (x = 17, y = 8) => weapon(x, y)
+const ANCHOR = { x: 15, y: 20 }
+
+/** A prop at scene pixel (x, y): placed in the cavern, so a taller suit does not lift it. */
+const put = (sprite: string, x: number, y: number, opts: { swap?: Record<string, string>; flipY?: boolean; offstage?: boolean } = {}): Actor =>
+  at(sprite, x - ANCHOR.x, y - ANCHOR.y, { fixed: true, ...opts })
+
+/** Text at scene cell (col, row); `lift`: over her head, so it rises with a taller suit. */
+const say = (text: string, col: number, row: number, color: string, lift = false) => ({ text, x: col - ANCHOR.x, y: row * 2 - ANCHOR.y, color, lift })
+
+// The three builds: where each one's visor, muzzle and brow are.
+const POWER: HeroTier[] = ['tier1', 'unknown']
+const VARIA_SUIT: HeroTier[] = ['tier2']
+const GRAVITY: HeroTier[] = ['tier3', 'tier4']
+/** One actor per build, each drawn for its own suits only. */
+const perSuit = (power: Actor, varia: Actor, gravity: Actor): Actor[] => [
+  { ...power, tiers: POWER },
+  { ...varia, tiers: VARIA_SUIT },
+  { ...gravity, tiers: GRAVITY },
+]
+
+// The front edge of the visor on its glint row, per build: the cone's tip.
+const VISOR = { power: { x: 27, y: 24 }, varia: { x: 28, y: 22 }, gravity: { x: 29, y: 17 } }
+type Aim = 'up' | 'level' | 'down'
+/** The scan visor's cone, its tip on the visor. */
+const scan = (aim: Aim): Actor[] => {
+  const one = (v: { x: number; y: number }) =>
+    aim === 'level'
+      ? put('scanLevel', v.x, v.y - SCAN_LEVEL.tip)
+      : aim === 'up'
+        ? put('scanUp', v.x, v.y - SCAN_UP.tip)
+        : put('scanUp', v.x, v.y - (SCAN_UP.sprite.rows.length - 1 - SCAN_UP.tip), { flipY: true })
+  return perSuit(one(VISOR.power), one(VISOR.varia), one(VISOR.gravity))
+}
+
+// Beams and charges are the weapon, so they take the beam's colors, and the Gravity
+// build's `hand` raises them to its higher cannon. A beam's middle row is the barrel's.
+const BARREL = 30 - ANCHOR.y
+/** The beam with its left end at scene column `x`. */
+const shot = (x: number) => weapon(x - ANCHOR.x, BARREL - 2)
+/** The beam just out of the muzzle, per build. */
+const fired = (): Actor[] => perSuit(shot(33), shot(35), shot(38))
+/** A charge gathering at the muzzle: 1 small, 2 large. */
+const charge = (n: 1 | 2): Actor[] => {
+  const one = (x: number) => weapon(x - ANCHOR.x, BARREL - n, { pose: `charge${n}` })
+  return perSuit(one(31), one(33), one(36))
+}
+/** Where a shot lands: everything she works on starts at this column. */
+const TARGET = 38
 
 const ink = '#c8f0ff'
 const warn = '#f8d040'
-const danger = '#f03850'
 
-const SAVE = { x: 22, y: 4 }
-const BLOCKS = { x: 16, y: 6 }
-const HATCH = { x: 28, y: 0 }
-const TABLET = { x: 24, y: 6 }
+const SAVE = { x: 12, y: 24 }
+const BLOCKS = { x: 36, y: 26 }
+const HATCH = { x: 41, y: 12 }
+const LORE_AT = { x: 38, y: 14 }
+const CRAWLER = { x: 38, y: 29 }
+const ITEM = { x: 38, y: 22 }
+
+// She sits four columns in from where she stands, her back to the station's pillar.
+const resting = (station: string): Actor[] => [put(station, SAVE.x, SAVE.y), hero('lie', 4), { ...put('helmetOff', 37, 28), tier: true }]
+const pillar = (lit: 0 | 1 | 2 | 3) => put(`lore${lit}`, LORE_AT.x, LORE_AT.y)
+const door = (state: '' | 'Flash' | 'Open') => put(`hatch${state}`, HATCH.x, HATCH.y)
+/** The morph ball `x` columns along, turned a quarter on odd steps so it rolls. */
+const ball = (x: number, turned = false) => hero(turned ? 'roll' : 'sleep', x)
+const blocks = (broken = false) => put(broken ? 'blocksBroken' : 'blocks', BLOCKS.x, BLOCKS.y)
+/** A baby metroid at scene pixel (x, y), fangs in or out. */
+const baby = (x: number, y: number, flap = false) => put(flap ? 'baby2' : 'baby1', x, y)
 
 const states: Theme['states'] = {
   idle: loop(
-    { actors: [at('saveOn1', SAVE.x, SAVE.y), hero('lie')], texts: [{ text: 'z', x: 6, y: -2, color: ink }], hold: 3 },
-    { actors: [at('saveOn2', SAVE.x, SAVE.y), hero('lie')], texts: [{ text: 'z', x: 7, y: -4, color: ink }], hold: 3 },
-    { actors: [at('saveOn1', SAVE.x, SAVE.y), hero('lie')], texts: [{ text: 'Z', x: 8, y: -6, color: ink }], hold: 3 },
-    { actors: [at('saveOn2', SAVE.x, SAVE.y), hero('lie')], hold: 3 },
+    { actors: resting('saveOn1'), texts: [say('z', 33, 9, ink)], hold: 3 },
+    { actors: resting('saveOn2'), texts: [say('z', 34, 8, ink)], hold: 3 },
+    { actors: resting('saveOn1'), texts: [say('Z', 35, 7, ink)], hold: 3 },
+    { actors: resting('saveOn2'), hold: 3 },
   ),
   thinking: loop(
-    { actors: [hero('stand'), at('scanCone1', 13, 0)], hold: 2 },
-    { actors: [hero('stand'), at('scanCone2', 13, -1)], hold: 2 },
-    { actors: [hero('stand'), at('scanCone3', 13, -2)], hold: 2 },
-    { actors: [hero('stand')], texts: [{ text: '?', x: 16, y: -2, color: ink }], hold: 2 },
+    { actors: [hero('stand'), ...scan('up')], hold: 2 },
+    { actors: [hero('stand'), ...scan('level')], hold: 2 },
+    { actors: [hero('stand'), ...scan('down')], hold: 2 },
+    { actors: [hero('stand')], texts: [say('?', 31, 9, ink, true)], hold: 2 },
   ),
+  // The cone is drawn first, so it ends on the pillar's face.
   reading: loop(
-    { actors: [hero('stand'), at('tablet', TABLET.x, TABLET.y), at('scanCone3', 13, -2)], hold: 2 },
-    { actors: [hero('stand'), at('tabletLit', TABLET.x, TABLET.y), at('reticle', TABLET.x - 2, TABLET.y - 1), at('scanBar1', TABLET.x - 1, TABLET.y - 6)], hold: 2 },
-    { actors: [hero('stand'), at('tabletLit', TABLET.x, TABLET.y), at('reticle', TABLET.x - 2, TABLET.y - 1), at('scanBar2', TABLET.x - 1, TABLET.y - 6)], hold: 2 },
-    { actors: [hero('stand'), at('tabletLit', TABLET.x, TABLET.y), at('reticle', TABLET.x - 2, TABLET.y - 1), at('scanBar3', TABLET.x - 1, TABLET.y - 6)], hold: 2 },
-    { actors: [hero('stand'), at('tablet', TABLET.x, TABLET.y), at('scanBar4', TABLET.x - 1, TABLET.y - 6)], texts: [{ text: 'LOG', x: TABLET.x + 1, y: TABLET.y - 10, color: ink }], hold: 2 },
+    { actors: [hero('stand'), ...scan('level'), pillar(0)], hold: 2 },
+    { actors: [hero('stand'), ...scan('level'), pillar(1)], hold: 2 },
+    { actors: [hero('stand'), ...scan('level'), pillar(2)], hold: 2 },
+    { actors: [hero('stand'), ...scan('level'), pillar(3)], hold: 2 },
+    { actors: [hero('stand'), pillar(3)], texts: [say('LOG', 40, 5, ink)], hold: 2 },
   ),
+  // She rolls up to the blocks, lays a bomb, rolls clear, and goes through the gap.
   editing: loop(
-    { actors: [at('blocks', BLOCKS.x, BLOCKS.y), hero('sleep', 2)], hold: 1 },
-    { actors: [at('blocks', BLOCKS.x, BLOCKS.y), hero('sleep', 6)], hold: 1 },
-    { actors: [at('blocks', BLOCKS.x, BLOCKS.y), at('bomb', 10, 13), hero('sleep', 4)], hold: 1 },
-    { actors: [at('blocks', BLOCKS.x, BLOCKS.y), at('bombLit', 10, 13), hero('sleep', 1)], hold: 1 },
-    { actors: [at('blocksBroken', BLOCKS.x, BLOCKS.y), at('boom2', 8, 10), hero('sleep', 1)], hold: 1 },
-    { actors: [at('blocksBroken', BLOCKS.x, BLOCKS.y), at('boom3', 8, 10), hero('sleep', 3)], hold: 1 },
-    { actors: [at('blocksBroken', BLOCKS.x, BLOCKS.y), hero('sleep', 8)], hold: 2 },
+    { actors: [blocks(), ball(3)], hold: 1 },
+    { actors: [blocks(), ball(7, true)], hold: 1 },
+    { actors: [blocks(), ball(11)], hold: 1 },
+    { actors: [blocks(), put('bomb', 31, 33), ball(7, true)], hold: 1 },
+    { actors: [blocks(), put('bombLit', 31, 33), ball(3)], hold: 1 },
+    { actors: [blocks(true), put('boom2', 29, 29), ball(3)], hold: 1 },
+    { actors: [blocks(true), put('boom3', 29, 29), ball(5, true)], hold: 1 },
+    { actors: [blocks(true), ball(9)], hold: 2 },
   ),
   shell: loop(
-    { actors: [hero('stand'), at('hatch', HATCH.x, HATCH.y)], hold: 2 },
-    { actors: [hero('attack'), shot(18), at('hatch', HATCH.x, HATCH.y)], hold: 1 },
-    { actors: [hero('attack'), shot(23), at('hatch', HATCH.x, HATCH.y)], hold: 1 },
-    { actors: [hero('stand'), at('hatchFlash', HATCH.x, HATCH.y)], hold: 1 },
-    { actors: [hero('stand'), at('hatchOpen', HATCH.x, HATCH.y)], hold: 2 },
-    { actors: [hero('walk', 3), at('hatchOpen', HATCH.x, HATCH.y)], hold: 1 },
-    { actors: [hero('stand', 5), at('hatchOpen', HATCH.x, HATCH.y)], hold: 2 },
+    { actors: [hero('stand'), door('')], hold: 2 },
+    { actors: [hero('attack'), door(''), ...fired()], hold: 1 },
+    { actors: [hero('attack'), door(''), shot(TARGET)], hold: 1 },
+    { actors: [hero('stand'), door('Flash')], hold: 1 },
+    { actors: [hero('stand'), door('Open')], hold: 2 },
+    { actors: [hero('walk', 4), door('Open')], hold: 1 },
+    { actors: [hero('stand', 8), door('Open')], hold: 2 },
   ),
+  // Two babies leave her side for the cavern's upper corner, hover there, and come back.
   agents: loop(
-    { actors: [hero('stand'), at('metroid1', 16, -2)], hold: 2 },
-    { actors: [hero('stand'), at('metroid2', 20, -5), at('metroid1', -12, 0)], hold: 2 },
-    { actors: [hero('stand'), at('metroid1', 26, -8), at('metroid2', -16, -4)], hold: 2 },
-    { actors: [hero('stand'), at('metroid2', 32, -6)], hold: 2 },
-    { actors: [hero('itemGet')], hold: 2 },
-    { actors: [hero('stand'), at('metroid2', 26, -4), at('metroid1', -14, -2)], hold: 2 },
+    { actors: [hero('stand'), baby(33, 14)], hold: 2 },
+    { actors: [hero('stand'), baby(38, 8, true), baby(33, 16)], hold: 2 },
+    { actors: [hero('stand'), baby(39, 6), baby(36, 15, true)], hold: 2 },
+    { actors: [hero('itemGet'), baby(38, 7, true), baby(39, 15)], hold: 2 },
+    { actors: [hero('itemGet'), baby(39, 6), baby(38, 14, true)], hold: 2 },
+    { actors: [hero('stand'), baby(36, 9, true), baby(33, 16)], hold: 2 },
   ),
 }
 
 const cold: Theme['cold'] = {
   idle: loop(
-    { actors: [at('saveOff', SAVE.x, SAVE.y), hero('lie')], texts: [{ text: 'z', x: 6, y: -2, color: '#6c7c9c' }], hold: 4 },
-    { actors: [at('saveOff', SAVE.x, SAVE.y), hero('lie')], texts: [{ text: 'Z', x: 7, y: -4, color: '#6c7c9c' }], hold: 4 },
+    { actors: resting('saveOff'), texts: [say('z', 33, 9, '#6c7c9c')], hold: 4 },
+    { actors: resting('saveOff'), texts: [say('Z', 34, 8, '#6c7c9c')], hold: 4 },
   ),
 }
 
 const SIGH = 'THREAT LEVEL: NEGLIGIBLE. OVERQUALIFIED.'
-const sweat = at('sweat', 12, -2)
+// A drop off the helmet's brow.
+const sweat = perSuit(put('sweat', 29, 15), put('sweat', 30, 13), put('sweat', 30, 8))
+const dots = say('...', 35, 9, ink, true)
 const overkill: Theme['overkill'] = {
   reading: loop(
-    { actors: [hero('stand'), at('tablet', TABLET.x, TABLET.y), sweat], hold: 2, caption: SIGH },
-    { actors: [hero('stand'), at('tabletLit', TABLET.x, TABLET.y), at('reticle', TABLET.x - 2, TABLET.y - 1), sweat], hold: 2, caption: SIGH },
-    { actors: [hero('stand'), at('tablet', TABLET.x, TABLET.y), sweat], texts: [{ text: '...', x: 16, y: -2, color: ink }], hold: 3, caption: SIGH },
+    { actors: [hero('stand'), pillar(0), ...sweat], hold: 2, caption: SIGH },
+    { actors: [hero('stand'), ...scan('level'), pillar(1), ...sweat], hold: 2, caption: SIGH },
+    { actors: [hero('stand'), pillar(0), ...sweat], texts: [dots], hold: 3, caption: SIGH },
   ),
   shell: loop(
-    { actors: [hero('stand'), at('hatch', HATCH.x, HATCH.y), sweat], hold: 2, caption: SIGH },
-    { actors: [hero('attack'), shot(18), at('hatch', HATCH.x, HATCH.y), sweat], hold: 1, caption: SIGH },
-    { actors: [hero('stand'), at('hatchOpen', HATCH.x, HATCH.y), sweat], texts: [{ text: '...', x: 16, y: -2, color: ink }], hold: 3, caption: SIGH },
+    { actors: [hero('stand'), door(''), ...sweat], hold: 2, caption: SIGH },
+    { actors: [hero('attack'), door(''), shot(TARGET), ...sweat], hold: 1, caption: SIGH },
+    { actors: [hero('stand'), door('Open'), ...sweat], texts: [dots], hold: 3, caption: SIGH },
   ),
 }
 
+// The hit flashes white, then red: one of the two shows on every suit.
+const HURT_A = { A: 'hurtA', a: 'hurtB', Y: 'hurtA', y: 'hurtB' }
+const HURT_B = { A: 'hurtB', a: 'hurtC', Y: 'hurtA', y: 'hurtB' }
+const ALARMED = { A: 'hurtB', a: 'hurtC', Y: 'hurtB', y: 'hurtC' }
+const alarms = (lit: boolean): Actor[] => [put(lit ? 'alarm1' : 'alarm2', 6, 32), put(lit ? 'alarm1' : 'alarm2', 40, 32)]
+const WHITE = { A: 'T', a: 'T', Y: 'T', y: 'T', L: 'T' }
+const GLOW = { A: 'glowB', a: 'Q', Y: 'glowA', y: 'glowB' }
+const RECHARGED = { A: 'O', a: 'o', Y: 'w', y: 'O' }
+const station = (light?: 1 | 2 | 3): Actor[] => [
+  put('rechargePipe', 22, -16, { offstage: true }),
+  put('rechargeTop', 12, 5),
+  ...(light ? [put(`rechargeRain${light}`, 14, 9)] : []),
+]
+const acquired = say('ITEM ACQUIRED', 17, 7, warn, true)
+
 const events: Theme['events'] = {
   toolSuccess: once(
-    { actors: [hero('attack'), shot(18), at('crawler1', 26, 11)], hold: 1 },
-    { actors: [hero('attack'), shot(22), at('crawler2', 25, 11)], hold: 1 },
-    { actors: [hero('stand'), at('boom2', 25, 8)], hold: 1 },
-    { actors: [hero('stand'), at('boom3', 25, 8)], hold: 1 },
-    { actors: [hero('stand'), at('energyDrop', 27, 12)], hold: 2 },
+    { actors: [hero('attack'), put('crawler1', CRAWLER.x, CRAWLER.y), ...fired()], hold: 1 },
+    { actors: [hero('attack'), put('crawler2', CRAWLER.x, CRAWLER.y), shot(TARGET)], hold: 1 },
+    { actors: [hero('stand'), put('boom2', CRAWLER.x, CRAWLER.y)], hold: 1 },
+    { actors: [hero('stand'), put('boom3', CRAWLER.x, CRAWLER.y)], hold: 1 },
+    { actors: [hero('stand'), put('energyDrop', CRAWLER.x + 3, CRAWLER.y + 3)], hold: 2 },
   ),
+  // Knocked back one column (the Gravity build stays off the charge ring) with a hop, and back to her place.
   toolError: once(
-    { actors: [hero('stand', -1, 0, { A: 'hurtA', a: 'hurtB', Y: 'hurtA', y: 'hurtB' })], hold: 1 },
-    { actors: [hero('stand', -3, -2, { A: 'hurtB', a: 'hurtB', Y: 'hurtA', y: 'hurtA' })], hold: 1 },
-    { actors: [hero('stand', -4, -1, { A: 'hurtA', a: 'hurtB', Y: 'hurtA', y: 'hurtB' })], hold: 1 },
-    { actors: [hero('stand', -4, 0, { A: 'hurtB', a: 'hurtB', Y: 'hurtA', y: 'hurtA' })], hold: 1 },
-    { actors: [hero('stand', -3, 0)], hold: 1 },
+    { actors: [hero('stand', -1, 0, HURT_A)], hold: 1 },
+    { actors: [hero('stand', -1, -1, HURT_B)], hold: 1 },
+    { actors: [hero('stand', -1, -1, HURT_A)], hold: 1 },
+    { actors: [hero('stand', -1, 0, HURT_B)], hold: 1 },
+    { actors: [hero('stand')], hold: 1 },
   ),
   turnComplete: once(
-    { actors: [hero('stand'), at('itemSphere1', 4, -8)], hold: 2 },
-    { actors: [hero('itemGet'), at('itemSphere2', 4, -8)], hold: 1 },
-    {
-      actors: [hero('itemGet'), at('itemSphere1', 4, -8), at('sparkle', -2, -12), at('sparkle', 14, -8)],
-      texts: [{ text: 'ITEM ACQUIRED', x: 18, y: -8, color: warn }],
-      hold: 2,
-    },
-    {
-      actors: [hero('itemGet'), at('itemSphere2', 4, -8), at('sparkle', -3, -6), at('sparkle', 15, -13)],
-      texts: [{ text: 'ITEM ACQUIRED', x: 18, y: -8, color: warn }],
-      hold: 3,
-    },
+    { actors: [hero('stand'), put('itemStand', ITEM.x, 31), put('itemSphere1', ITEM.x, ITEM.y)], hold: 2 },
+    { actors: [hero('itemGet'), put('itemStand', ITEM.x, 31), put('itemSphere2', ITEM.x, ITEM.y)], hold: 1 },
+    { actors: [hero('itemGet'), put('itemStand', ITEM.x, 31), put('itemSphere1', ITEM.x, ITEM.y), put('sparkle', 36, 18), put('sparkle', 41, 25)], texts: [acquired], hold: 2 },
+    { actors: [hero('itemGet'), put('itemStand', ITEM.x, 31), put('sparkle', 39, 23), put('sparkle', 41, 18), put('sparkle', 36, 26)], texts: [acquired], hold: 3 },
   ),
   milestone: once({ actors: [hero('stand')], message: 'milestone', hold: 18 }),
   cacheCold: once(
-    { actors: [at('saveOn1', SAVE.x, SAVE.y), hero('lie')], hold: 2 },
-    { actors: [at('saveOn2', SAVE.x, SAVE.y), hero('lie')], hold: 1 },
-    { actors: [at('saveOff', SAVE.x, SAVE.y), hero('lie')], hold: 1 },
-    { actors: [at('saveOff', SAVE.x, SAVE.y), hero('lie')], message: 'cacheCold', hold: 12 },
+    { actors: resting('saveOn1'), hold: 2 },
+    { actors: resting('saveOn2'), hold: 1 },
+    { actors: resting('saveOff'), hold: 1 },
+    { actors: resting('saveOff'), message: 'cacheCold', hold: 12 },
   ),
   limitWarning: once(
-    { actors: [hero('stand', 0, 0, { A: 'hurtB' }), at('alarm1', -10, 12), at('alarm1', 30, 12)], message: 'limitWarning', hold: 3 },
-    { actors: [hero('stand'), at('alarm2', -10, 12), at('alarm2', 30, 12)], message: 'limitWarning', hold: 3 },
-    { actors: [hero('stand', 0, 0, { A: 'hurtB' }), at('alarm1', -10, 12), at('alarm1', 30, 12)], message: 'limitWarning', hold: 3 },
-    { actors: [hero('walk'), at('alarm2', -10, 12), at('alarm2', 30, 12)], message: 'limitWarning', hold: 6 },
+    { actors: [hero('stand', 0, 0, ALARMED), ...alarms(true)], message: 'limitWarning', hold: 3 },
+    { actors: [hero('stand'), ...alarms(false)], message: 'limitWarning', hold: 3 },
+    { actors: [hero('stand', 0, 0, ALARMED), ...alarms(true)], message: 'limitWarning', hold: 3 },
+    { actors: [hero('walk'), ...alarms(false)], message: 'limitWarning', hold: 6 },
   ),
+  // The light falls behind her, from the emitter to the floor.
   compaction: once(
-    { actors: [at('rechargeTop', -2, -14), hero('itemGet')], hold: 1, caption: 'compaction' },
-    { actors: [at('rechargeTop', -2, -14), at('rechargeRain1', 0, -10), hero('itemGet')], hold: 2, caption: 'compaction' },
-    { actors: [at('rechargeTop', -2, -14), at('rechargeRain2', 0, -10), hero('itemGet', 0, 0, { A: 'glowA', Y: 'glowB' })], hold: 2, caption: 'compaction' },
-    { actors: [at('rechargeTop', -2, -14), at('rechargeRain1', 0, -10), hero('itemGet')], hold: 2, caption: 'compaction' },
+    { actors: [...station(), hero('itemGet')], hold: 1, caption: 'compaction' },
+    { actors: [...station(1), hero('itemGet')], hold: 2, caption: 'compaction' },
+    { actors: [...station(2), hero('itemGet', 0, 0, RECHARGED)], hold: 2, caption: 'compaction' },
+    { actors: [...station(3), hero('itemGet')], hold: 2, caption: 'compaction' },
     { actors: [hero('stand')], hold: 2, caption: 'compaction' },
   ),
   modelChange: once(
-    { actors: [hero('itemGet', 0, 0, { A: 'glowA', a: 'glowB', Y: 'glowA', y: 'glowB' })], hold: 1 },
-    { actors: [hero('itemGet', 0, 0, { A: 'glowB', a: 'Q', Y: 'glowA', y: 'Q' }), at('sparkle', -4, 2), at('sparkle', 16, 6)], hold: 1 },
-    { actors: [hero('itemGet', 0, 0, { A: 'glowA', a: 'glowB', Y: 'glowA', y: 'glowB' }), at('sparkle', -3, 8), at('sparkle', 15, -2)], hold: 1 },
+    { actors: [hero('itemGet', 0, 0, WHITE)], hold: 1 },
+    { actors: [hero('itemGet', 0, 0, GLOW), put('sparkle', 15, 26), put('sparkle', 32, 20)], hold: 1 },
+    { actors: [hero('itemGet', 0, 0, WHITE), put('sparkle', 14, 30), put('sparkle', 31, 12)], hold: 1 },
     { actors: [hero('itemGet')], hold: 6, caption: 'modelChange' },
   ),
+  // The new beam gathers at the muzzle and is let go.
   effortChange: once(
-    { actors: [hero('itemGet'), at('charge1', 6, -6)], hold: 2 },
-    { actors: [hero('itemGet'), at('charge2', 5, -6), shot(5, -9)], hold: 2 },
+    { actors: [hero('stand'), ...charge(1)], hold: 2 },
+    { actors: [hero('stand'), ...charge(2)], hold: 2 },
     {
-      actors: [hero('itemGet'), shot(5, -9)],
-      texts: [{ text: '*', x: 2, y: -12, color: '#fcfcfc' }, { text: '*', x: 13, y: -9, color: '#fcfcfc' }],
+      actors: [hero('attack'), ...fired()],
+      texts: [say('*', 37, 12, '#fcfcfc'), say('*', 43, 11, '#fcfcfc'), say('*', 40, 17, '#fcfcfc')],
       hold: 5,
       caption: 'effortChange',
     },
   ),
 }
 
-const STD_POSES = { stand: 'stand', walk: 'walk', attack: 'attack', itemGet: 'itemGet', sleep: 'ball', lie: 'lie' }
-const VARIA_POSES = { stand: 'variaStand', walk: 'variaWalk', attack: 'variaAttack', itemGet: 'variaItemGet', sleep: 'ball', lie: 'variaLie' }
-const GRAND_POSES = { stand: 'grandStand', walk: 'grandWalk', attack: 'grandAttack', itemGet: 'grandItemGet', sleep: 'bigBall', lie: 'grandLie' }
+const STD_POSES = { stand: 'stand', walk: 'walk', attack: 'attack', itemGet: 'itemGet', sleep: 'ball', lie: 'lie', roll: 'ball2' }
+const VARIA_POSES = { stand: 'variaStand', walk: 'variaWalk', attack: 'variaAttack', itemGet: 'variaItemGet', sleep: 'ball', lie: 'variaLie', roll: 'ball2' }
+const GRAND_POSES = { stand: 'grandStand', walk: 'grandWalk', attack: 'grandAttack', itemGet: 'grandItemGet', sleep: 'bigBall', lie: 'grandLie', roll: 'bigBall2' }
+// The Gravity build's cannon is two pixels higher than the others'.
+const GRAND_FORM = { poses: GRAND_POSES, dx: -4, dy: -8, lift: 8, hand: { x: 0, y: -2 } }
+const CHARGES = { charge1: { sprite: 'charge1' }, charge2: { sprite: 'charge2' } }
 
 export const metroid: Theme = {
   id: 'metroid',
   name: 'Context Prime',
   description: 'Metroid homage: energy tanks, missiles, a power suit per model and a beam per effort',
-  version: '1.0.0',
+  version: '1.1.0',
   palette: {
-    dark: { accent: '#58e040', gold: '#f8d040', red: '#f03850', label: '#f0a0d0', dim: '#8c88a0', text: '#f0f0f8' },
-    light: { accent: '#1c8a1c', gold: '#9c7000', red: '#c01830', label: '#9c2c78', dim: '#6c6880', text: '#1c1828' },
+    dark: { accent: '#58e040', gold: '#f8d040', red: '#f4506a', label: '#f0a0d0', dim: '#8c88a0', text: '#f0f0f8' },
+    light: { accent: '#187c18', gold: '#8a6200', red: '#c01830', label: '#9c2c78', dim: '#6c6880', text: '#1c1828' },
   },
   pixels,
   labels: {
     context: 'ENERGY',
     spend: 'MISSILES',
     cache: 'CHARGE',
-    limits: 'ESCAPE',
+    limits: 'ALERT',
     modelItem: 'SUIT',
     effortItem: 'BEAM',
     heroes: 'Suits',
@@ -870,7 +918,7 @@ export const metroid: Theme = {
     Cost: 'Missiles',
     'Next message': 'Charge',
     Tokens: 'Logbook',
-    Limits: 'Escape timer',
+    Limits: 'Alert level',
     'Tool calls': 'Arsenal',
     Files: 'Area map',
   },
@@ -881,18 +929,24 @@ export const metroid: Theme = {
   events,
   scene: {
     height: 40,
-    anchor: { x: 14, y: 20 },
+    anchor: ANCHOR,
     background: {
       ground: '#120a1c',
       gradient: ['#05030a', '#100a1e', '#1a1030', '#221636'],
       deep: ['#0a0204', '#1c0608', '#33100e', '#4a1810'],
       border: 'ceiling',
       floor: 'floorRock',
+      // Past the action (columns 0..45), from the right edge in: the Chozo statue at 58, the gunship at 80,
+      // an energy tank and a stalagmite at 96. The pods keep a fixed column: each hangs from a stalactite.
       decor: [
-        { sprite: 'console', x: 0, y: 24 },
-        { sprite: 'weed', x: 34, y: 32 },
-        { sprite: 'chozo', x: 50, y: 22 },
-        { sprite: 'sporePod', x: 46, y: 5 },
+        { sprite: 'chozo', x: -1, y: 22, minColumns: 56 },
+        { sprite: 'weed', x: -1, y: 32, minColumns: 56 },
+        { sprite: 'pod', x: 51, y: 5, sky: true, minColumns: 56 },
+        { sprite: 'ship', x: -12, y: 22, minColumns: 78 },
+        { sprite: 'podPair', x: 67, y: 5, sky: true, minColumns: 78 },
+        { sprite: 'tankStand', x: -35, y: 27, minColumns: 94 },
+        { sprite: 'stalagmite', x: -43, y: 29, minColumns: 94 },
+        { sprite: 'pod', x: 83, y: 5, sky: true, minColumns: 94 },
       ],
       particles: [
         { colors: ['moss', 'mossHi'], count: 12, drift: 'up', speed: 0.5, maxPercent: 70 },
@@ -905,46 +959,47 @@ export const metroid: Theme = {
       tier2: { A: 'variaA', a: 'variaa', Y: 'variaY', y: 'variay', L: 'variaL' },
       tier3: { A: 'gravA', a: 'grava', Y: 'gravY', y: 'gravy', L: 'gravL' },
       tier4: { A: 'lightA', a: 'lighta', Y: 'lightY', y: 'lighty', V: 'lightV', v: 'lightv', L: 'lightL' },
-      unknown: { A: 'protoA', a: 'protoa', Y: 'protoY', y: 'protoy', V: 'protoV', L: 'protoY' },
+      unknown: { A: 'protoA', a: 'protoa', Y: 'protoY', y: 'protoy', V: 'protoV', L: 'protoY', G: 'protoG', g: 'protog' },
     },
     heroForms: {
       tier2: { poses: VARIA_POSES, dx: -1, dy: -2, lift: 2 },
-      tier3: { poses: GRAND_POSES, dx: -4, dy: -8, lift: 8 },
-      tier4: { poses: GRAND_POSES, dx: -4, dy: -8, lift: 8 },
+      tier3: GRAND_FORM,
+      tier4: GRAND_FORM,
     },
     heroNames: {
       tier1: 'Power Suit',
       tier2: 'Varia Suit',
       tier3: 'Gravity Suit',
-      tier4: 'Chozo Light Suit',
+      tier4: 'Light Suit',
       unknown: 'Prototype Suit',
     },
     weapons: {
-      low: { sprite: 'beamPower', swap: {}, name: 'Power Beam' },
-      medium: { sprite: 'beamWave', swap: { P: 'waveP', p: 'wavep', Q: 'waveQ' }, name: 'Wave Beam' },
-      high: { sprite: 'beamIce', swap: { P: 'iceP', p: 'icep', Q: 'iceQ' }, name: 'Ice Beam' },
-      xhigh: { sprite: 'beamPlasma', swap: { P: 'plasmaP', p: 'plasmap', Q: 'plasmaQ' }, name: 'Plasma Beam' },
-      max: { sprite: 'beamHyper', swap: { P: 'hyperP', p: 'hyperp', Q: 'hyperQ' }, aura: 'hyperAura', name: 'Hyper Beam' },
+      low: { sprite: 'beamPower', swap: {}, poses: CHARGES, name: 'Power Beam' },
+      medium: { sprite: 'beamWave', swap: { P: 'waveP', p: 'wavep', Q: 'waveQ' }, poses: CHARGES, name: 'Wave Beam' },
+      high: { sprite: 'beamIce', swap: { P: 'iceP', p: 'icep', Q: 'iceQ' }, poses: CHARGES, name: 'Ice Beam' },
+      xhigh: { sprite: 'beamPlasma', swap: { P: 'plasmaP', p: 'plasmap', Q: 'plasmaQ' }, poses: CHARGES, name: 'Plasma Beam' },
+      max: { sprite: 'beamHyper', swap: { P: 'hyperP', p: 'hyperp', Q: 'hyperQ' }, aura: 'hyperAura', poses: CHARGES, name: 'Hyper Beam' },
     },
     bar: {
       widgets: [
-        { kind: 'counter', value: 'contextLeft', format: 'EN {v}', digits: 2 },
+        { kind: 'counter', value: 'contextLeft', format: 'EN {v}', digits: 2, chars: 6 },
         { kind: 'meter', value: 'contextLeft', count: 10, perRow: 5, sprites: ['tank0', 'tank1', 'tank2'], label: 'ENERGY', pulseBelow: 0.2 },
-        { kind: 'counter', value: 'spend', icon: 'missile', digits: 3 },
-        { kind: 'box', shows: 'model', sprite: 'helmet', label: 'SUIT', x: 1, y: 4, drop: 2 },
-        { kind: 'box', shows: 'effort', sprite: 'miniBeam', label: 'BEAM', x: 2, y: 5, drop: 1 },
-        { kind: 'counter', value: 'limitMax', label: 'ESCAPE', format: '{v}%', drop: 4 },
-        { kind: 'map', drop: 3 },
+        { kind: 'counter', value: 'spend', icon: 'missile', digits: 3, chars: 4, wrap: true },
+        { kind: 'box', shows: 'model', sprite: 'helmet', label: 'SUIT', x: 1, y: 4, drop: 3 },
+        { kind: 'box', shows: 'effort', sprite: 'miniBeam', label: 'BEAM', x: 1, y: 5, drop: 2 },
+        { kind: 'counter', value: 'limitMax', label: 'ALERT', format: '{v}%', drop: 1 },
+        { kind: 'map' },
       ],
       colors: { bg: 'black', box: 'hudBox', text: 'hudText', label: 'hudLabel', map: 'mapGrid', mapDot: 'mapDot' },
     },
-    lineup: { ground: 'ground' },
-    stamina: { x: 1, y: 11, radius: 5, full: 'chargeFull', empty: 'chargeEmpty', cold: 'chargeCold', tagIcon: 'missile' },
+    lineup: { ground: 'ground', dim: '#4a4460', mark: '#981020' },
+    // No plate under the price: white on the cavern's dark, red once the charge is gone.
+    stamina: { x: 1, y: 11, radius: 5, full: 'chargeFull', empty: 'chargeEmpty', cold: 'chargeCold', tagIcon: 'missile', tagColor: '#f8f8f8', tagColdColor: '#f03850' },
   },
   text: {
-    idle: 'The hunter rests at a save station, helmet off.',
+    idle: 'The hunter rests against a save station, helmet off.',
     thinking: 'The scan visor sweeps the cavern...',
-    reading: 'Scanning a Chozo lore tablet.',
+    reading: 'The scan visor reads a pillar of Chozo lore.',
     editing: 'Morph ball bombs break the blocks.',
     shell: 'The arm cannon blasts a hatch open.',
     agents: 'Baby metroids drift off on errands.',
@@ -953,7 +1008,7 @@ export const metroid: Theme = {
     turnComplete: 'ITEM ACQUIRED.',
     milestone: 'The suit sounds an energy warning.',
     cacheCold: 'The save station powers down.',
-    limitWarning: 'Time bomb set. Escape!',
+    limitWarning: 'Alarms flash: the alert level is rising.',
     compaction: 'An energy recharge station refills the tanks.',
     modelChange: 'Suit upgrade installed.',
     effortChange: 'New beam acquired.',
@@ -967,8 +1022,8 @@ export const metroid: Theme = {
     { level: 'critical', message: 'ENERGY CRITICAL. {pct}% DEPLETED. SAVE YOUR PROGRESS AND RETURN TO SHIP (/clear).' },
   ],
   messages: {
-    cacheCold: 'SAVE STATION OFFLINE. CACHE COLD. NEXT SHOT AT FULL COST.',
-    limitWarning: 'TIME BOMB SET. {name} AT {pct}%. ESCAPE IMMEDIATELY.',
+    cacheCold: 'SAVE STATION OFFLINE. CHARGE LOST: CACHE COLD. NEXT SHOT AT FULL COST.',
+    limitWarning: 'EMERGENCY. ALERT LEVEL RISING: {name} AT {pct}%.',
     compaction: 'Energy recharge complete. Logs compacted.',
     modelChange: '{name} equipped.',
     effortChange: '{weapon} acquired.',
