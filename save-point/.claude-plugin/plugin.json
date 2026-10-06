@@ -1,6 +1,6 @@
 {
   "name": "save-point",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Context, cost and cache at a glance: a band above the prompt, a /hud pane with retro game themes, and Autopilot context notices",
   "author": {
     "name": "Robert Frey"

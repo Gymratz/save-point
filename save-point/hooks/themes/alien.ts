@@ -312,6 +312,9 @@ const sprites: Theme['sprites'] = {
   phone: {
     rows: ['......M.....M', '......MM...MM', '.......MMMMM.', '.........n...', '.........n...', '.........n...', '.........n...', '.........n...', 'xxxxx....n...', 'xYxYx....n...', 'xxxxx....n...', 'xYxYxnnnnn...', 'xxxxx....n...'],
   },
+  phoneLit: {
+    rows: ['......M.....M', '......MM...MM', '.......MMMMM.', '.........n...', '.........n...', '.........n...', '.........n...', '.........n...', 'xxxxx....n...', 'xWxWx....n...', 'xxxxx....n...', 'xWxWxnnnnn...', 'xxxxx....n...'],
+  },
   wave1: { rows: ['.ccc.', 'c...c'] },
   wave2: { rows: ['.ccccc.', 'c.....c'] },
   wave3: { rows: ['..ccccc..', '.c.....c.', 'c.......c'] },
@@ -372,9 +375,9 @@ const ray = (shimmer = false): Actor => scenery(shimmer ? 'beamB' : 'beamA', BEA
 /** A specimen `h` pixels tall held in the beam, `up` pixels above where it floats; `grounded`: standing on the grass. */
 const held = (sprite: string, h: number, up = 0, opts: Partial<Actor> = {}): Actor => scenery(sprite, SPOT, 14 - h - up, opts)
 const grounded = (sprite: string, h: number, opts: Partial<Actor> = {}): Actor => scenery(sprite, SPOT, 16 - h, opts)
-/** The probe in the outstretched hand, `reach` pixels forward with the crew member who holds it. */
-const probing = (reach = 0): Actor[] => [hero('side', reach), weapon(13 + reach, 8, { turn: 'ccw' })]
-const say = (text: string, x: number, y: number, color = INK): SceneText => ({ text, x, y, color })
+/** The probe in the outstretched hand, slid `reach` pixels forward. The crew member stands still: a body that steps every frame twitches. */
+const probing = (reach = 0): Actor[] => [hero('side'), weapon(13 + reach, 8, { turn: 'ccw' })]
+const say = (text: string, x: number, y: number, color = INK, lift = false): SceneText => ({ text, x, y, color, lift })
 
 type Specimen = { sprite: string; h: number; yelp: string; caption: string; alt?: string }
 const SPECIMENS: Specimen[] = [
@@ -417,23 +420,24 @@ const drones = (step: 0 | 1 | 2, blink = false): Actor[] => {
 }
 
 const PHONE = scenery('phone', 15, 3)
+const PHONE_LIT = scenery('phoneLit', 15, 3)
 const waves = (n: number): Actor[] => [scenery('wave1', 22, 0), scenery('wave2', 22, -3), scenery('wave3', 22, -7)].slice(0, n)
-const dial = (reach: number, n: number, blink = false, extra: Actor[] = []): Actor[] => [hero('side', reach), PHONE, ship(blink), ...waves(n), ...extra]
+const dial = (press: number, n: number, blink = false, extra: Actor[] = []): Actor[] => [hero('side'), press ? PHONE_LIT : PHONE, ship(blink), ...waves(n), ...extra]
 
 const states: Theme['states'] = {
   // The crew dozes on its feet; the cow sleeps off its sedative, legs in the air.
   idle: loop(
-    { actors: [hero('sleep'), ship(), grounded('cow', 10, { flipY: true })], texts: [say('z', 15, 0), say('z', 29, 2)], hold: 3 },
-    { actors: [hero('sleep'), ship(true), grounded('cow', 10, { flipY: true })], texts: [say('z', 16, -2), say('Z', 30, 0)], hold: 3 },
-    { actors: [hero('sleep'), ship(), grounded('cow', 10, { flipY: true })], texts: [say('Z', 17, -4)], hold: 3 },
+    { actors: [hero('sleep'), ship(), grounded('cow', 10, { flipY: true })], texts: [say('z', 13, -2, INK, true), say('z', 29, 2)], hold: 3 },
+    { actors: [hero('sleep'), ship(true), grounded('cow', 10, { flipY: true })], texts: [say('z', 14, -4, INK, true), say('Z', 30, 0)], hold: 3 },
+    { actors: [hero('sleep'), ship(), grounded('cow', 10, { flipY: true })], texts: [say('Z', 15, -6, INK, true)], hold: 3 },
     { actors: [hero('sleep'), ship(true), grounded('cow', 10, { flipY: true })], hold: 3 },
   ),
   // A hologram of the specimen turns over a projector while the crew thinks.
   thinking: loop(
-    { actors: [hero('stand'), ship(), scenery('projector', 25, 13), scenery('holoCow', SPOT, 2)], texts: [say('.', 17, 0)], hold: 2 },
-    { actors: [hero('stand'), ship(), scenery('projector', 25, 13), scenery('holoCow', SPOT, 2, { flip: true })], texts: [say('..', 17, 0)], hold: 2 },
-    { actors: [hero('stand'), ship(true), scenery('projector', 25, 13), scenery('holoCow', SPOT, 2)], texts: [say('...', 17, 0)], hold: 2 },
-    { actors: [hero('walk'), ship(true), scenery('projector', 25, 13), scenery('holoCow', SPOT, 2, { flip: true })], texts: [say('?', 17, 0)], hold: 2 },
+    { actors: [hero('stand'), ship(), scenery('projector', 25, 13), scenery('holoCow', SPOT, 2)], texts: [say('.', 17, -2, INK, true)], hold: 2 },
+    { actors: [hero('stand'), ship(), scenery('projector', 25, 13), scenery('holoCow', SPOT, 2, { flip: true })], texts: [say('..', 17, -2, INK, true)], hold: 2 },
+    { actors: [hero('stand'), ship(true), scenery('projector', 25, 13), scenery('holoCow', SPOT, 2)], texts: [say('...', 17, -2, INK, true)], hold: 2 },
+    { actors: [hero('walk'), ship(true), scenery('projector', 25, 13), scenery('holoCow', SPOT, 2, { flip: true })], texts: [say('?', 17, -2, INK, true)], hold: 2 },
   ),
   // Something new in the beam every time. Everything gets probed.
   reading: oneOf(loop(...probe(SPECIMENS[0]!)), ...SPECIMENS.slice(1).map(s => loop(...probe(s)))),
@@ -445,9 +449,9 @@ const states: Theme['states'] = {
   // A keypad, an umbrella and some foil: the signal goes up to the saucer.
   shell: loop(
     { actors: dial(0, 0), hold: 2 },
-    { actors: dial(2, 1), texts: [say('bip', 15, 0)], hold: 2 },
+    { actors: dial(2, 1), texts: [say('bip', 15, 8)], hold: 2 },
     { actors: dial(0, 2), hold: 1 },
-    { actors: dial(2, 3, true), texts: [say('bip', 15, 0)], hold: 2, caption: 'Phoning home. Roaming charges apply.' },
+    { actors: dial(2, 3, true), texts: [say('bip', 15, 8)], hold: 2, caption: 'Phoning home. Roaming charges apply.' },
     { actors: dial(0, 3), hold: 1, caption: 'Phoning home. Roaming charges apply.' },
     { actors: dial(0, 0, true), texts: [say('OK', 13, -12, GOLD)], hold: 2, caption: 'Phoning home. Roaming charges apply.' },
   ),
@@ -464,8 +468,8 @@ const states: Theme['states'] = {
 const cold: Theme['cold'] = {
   // The sedative wore off: the cow is up, and watching.
   idle: loop(
-    { actors: [hero('sleep'), ship(), grounded('cow', 10, { flip: true })], texts: [say('z', 15, 0)], hold: 4 },
-    { actors: [hero('sleep'), ship(true), grounded('cow', 10, { flip: true })], texts: [say('Z', 16, -2), say('moo.', 24, 2)], hold: 4 },
+    { actors: [hero('sleep'), ship(), grounded('cow', 10, { flip: true })], texts: [say('z', 13, -2, INK, true)], hold: 4 },
+    { actors: [hero('sleep'), ship(true), grounded('cow', 10, { flip: true })], texts: [say('Z', 14, -4, INK, true), say('moo.', 24, 2)], hold: 4 },
   ),
 }
 
@@ -480,9 +484,9 @@ const overkill: Theme['overkill'] = {
   reading: loop(...probe(SPECIMENS[3]!, sweat, SIGH_READ).map(f => ({ ...f, caption: SIGH_READ }))),
   shell: loop(
     { actors: dial(0, 0, false, sweat), hold: 2, caption: SIGH_SHELL },
-    { actors: dial(2, 1, false, sweat), texts: [say('bip', 15, 0)], hold: 2, caption: SIGH_SHELL },
+    { actors: dial(2, 1, false, sweat), texts: [say('bip', 15, 8)], hold: 2, caption: SIGH_SHELL },
     { actors: dial(0, 3, true, sweat), hold: 2, caption: SIGH_SHELL },
-    { actors: dial(0, 0, false, sweat), texts: [say('~sigh~', 15, 0)], hold: 3, caption: SIGH_SHELL },
+    { actors: dial(0, 0, false, sweat), texts: [say('~sigh~', 13, -2, INK, true)], hold: 3, caption: SIGH_SHELL },
   ),
 }
 
