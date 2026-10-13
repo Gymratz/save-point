@@ -106,6 +106,42 @@ describe('quest tab', () => {
     await q.clock.advance(1500)
     expect((await q.measure()).text.includes(slime)).toBe(true)
   })
+  test('a burst of parallel reads plays its result once, not once per read', { timeoutMs: 30_000 }, async ($, on) => {
+    const q = await quest($, on, 'zelda', 48, 70)
+    const slime = resolveTheme('zelda').theme.text.toolSuccess
+    await q.clock.advance(1000)
+    await Promise.all([1, 2, 3, 4, 5, 6].map(k => $.tool.call({ tool: 'Read', file_path: `${k}.ts`, tool_use_id: `t${k}` } as never)))
+    await q.clock.advance(2000)
+    const count = (text: string) => text.split(slime).length - 1
+    expect(count((await q.measure()).text)).toBe(1)
+    await q.clock.advance(2000)
+    expect(count((await q.measure()).text)).toBe(1)
+  })
+  test('a theme with actions draws their row under the scene; a press plays a reaction and its caption', { timeoutMs: 30_000 }, async ($, on) => {
+    const q = await quest($, on, 'alien', 48, 70)
+    const m = await q.measure()
+    expect(m.total).toBe(70)
+    expect(m.text).toContain('PROBE ALIEN')
+    expect(m.text).toContain('PROBE COW')
+    expect(m.text).toContain('WAVE AT FEDS')
+    await q.clock.advance(500)
+    const before = (await q.measure()).text
+    await q.ui.press({ key: 'act-cow' })
+    await q.clock.advance(700)
+    const text = (await q.measure()).text
+    expect(text).not.toBe(before)
+    const captions = resolveTheme('alien')
+      .theme.actions!.find(a => a.id === 'cow')!
+      .reactions.calm.flatMap(t => t.frames.map(f => f.caption))
+      .filter((c): c is string => Boolean(c))
+    expect(captions.some(c => text.includes(c))).toBe(true)
+    // The same press twice more in a second: the second one waits, the third replaces it (one at most).
+    await q.ui.press({ key: 'act-cow' })
+    await q.ui.press({ key: 'act-cow' })
+    await $.command.run({ command: 'hud', args: 'poke 1', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+    await q.clock.advance(4000)
+    expect(q.blits.length).toBeGreaterThan(10)
+  })
   test('About draws at 48 columns and says where the pane stands', { timeoutMs: 30_000 }, async ($, on) => {
     const q = await quest($, on, 'metroid', 48, 60)
     await q.ui.press({ key: 'tab-about' })

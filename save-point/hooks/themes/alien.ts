@@ -9,7 +9,7 @@
 // Sprites are rows of characters; each character is a key of `pixels` below.
 
 import { at, hero, loop, once, oneOf, weapon } from './kit'
-import type { Actor, Frame, HeroTier, SceneText, Sprite, Theme } from './types'
+import type { Actor, Animation, Frame, HeroTier, SceneText, Sprite, Theme, ThemeAction } from './types'
 
 const pixels = {
   // Crew
@@ -340,6 +340,22 @@ const sprites: Theme['sprites'] = {
   newsVan: { rows: ['......M...M...', '.......MMM....', '........m.....', '.WWWWWWWWWWW..', '.WxxxxWWDDDW..', '.WWWWWWWDDDWW.', '.WWWWWWWWWWWWW', '.WWWWWWWWWWWWW', '.WmmWWWWWWmmW.', '..mm......mm..'] },
   scarecrow: { rows: ['...yyy...', '..yyyyy..', '...sss...', '...sKs...', 'n.xxxxx.n', 'nnxxxxxnn', '..xxxxx..', '...ddd...', '...ddd...', '....n....', '....n....', '....n....'] },
   windmill: { rows: ['M..M..M', '.M.M.M.', '..MMM..', 'MMMmMMM', '..MMM..', '.M.M.M.', 'M..M..M', '...m...', '..m.m..', '..m.m..', '..mmm..', '.m...m.', '.m...m.', '.mmmmm.', 'm.....m', 'm.....m'] },
+  // You: a gloved hand from the top of the scene, a fist around the crew's own probe, or an open palm waving.
+  // A pale edge (the night sky swallows a dark one) and a red cuff.
+  hand: { rows: ['.xxxxxx.', 'xxxxxxxx', 'aWWWWWWa', 'aWaWaWWa', 'aWWWWWWa', 'aWWWWWWa', '.aWWWWa.', '..aaaa..'] },
+  palm: { rows: ['.a.a.a..', 'aWaWaWa.', 'aWaWaWaa', 'aWWWWWWa', 'aWWWWWWa', 'aWWWWWWa', '.aWWWWa.', '.xxxxxx.', 'xxxxxxxx'] },
+  palm2: { rows: ['..a.a.a.', '.aWaWaWa', 'aaWaWaWa', 'aWWWWWWa', 'aWWWWWWa', 'aWWWWWWa', '.aWWWWa.', '.xxxxxx.', 'xxxxxxxx'] },
+  // What the crew and the cow answer with.
+  permit: { rows: ['rrrrrrrrr', 'rYYYYYYYr', 'rYrYYrYYr', 'rYYYYYYYr', 'rrrrrrrrr'] },
+  clipboard: { rows: ['..nn..', 'nnnnnn', 'nWWWWn', 'nWKWWn', 'nWWWWn', 'nWKWWn', 'nWWWWn', 'nnnnnn'] },
+  cowKick: { rows: ['..........W.W', '.........WWWW', '...WWWWWWWKWW', 'KK.KWWWKKWWWW', '.KKWWWWKKWWpp', '...WWWWWWKW..', '...WWWWWWWW..', '.......W.W...', '.......W.W...', '.......K.K...'] },
+  cowBack: { rows: ['....K....', '....K....', '.WWWWWWW.', 'WWWWWWWWW', 'WWKKWWWWW', 'WWWWWKKWW', 'WWWWWWWWW', '.WWWWWWW.', '.WW.W.WW.', '.KK.K.KK.'] },
+  cowSit: { rows: ['..........W.W', '.........WWWW', '.WWKKWWWWWKWW', 'KWKKKWWKKWWWW', 'KWWKWWWKKWWpp', '.WWWWWWWKW...', '.WWWWWWWWW...', '.KKWWWWKKW...'] },
+  // The Feds, waving back, with a camera, with the flashy thing; and the flash itself (a full-scene backdrop).
+  agentWave: { rows: ['..kkkk..', '..kkkk..', '..ssss..', '..kkks.s', '..ssss.k', '.kkWWkkk', 'kkkWxkkk', 'kkkWxkkk', 'kskWWksk', '.kkkkkk.', '..kk.kk.', '..kk.kk.', '..kk.kk.', '.kkk.kkk'] },
+  camera: { rows: ['MMMMM', 'MKKMM', 'MKKMM', 'MMMMM'] },
+  wiper: { rows: ['.R.', '.M.', '.M.', '.M.', '.M.', '.m.'] },
+  flash: { rows: Array.from({ length: 66 }, () => 'E'.repeat(96)) },
   // Status bar
   herd0: herd(0),
   herd1: herd(1),
@@ -370,8 +386,9 @@ const BEAM = { x: 21, y: -6 }
 const SPOT = 22
 
 const scenery = (sprite: string, x: number, y: number, opts: Partial<Actor> = {}): Actor => at(sprite, x, y, { fixed: true, ...opts })
-const ship = (blink = false, x = SHIP.x, y = SHIP.y): Actor => scenery(blink ? 'ufo2' : 'ufo1', x, y)
-const ray = (shimmer = false): Actor => scenery(shimmer ? 'beamB' : 'beamA', BEAM.x, BEAM.y)
+// The saucer and its beam go with the crew: not drawn while the crew's rest has taken the ship away.
+const ship = (blink = false, x = SHIP.x, y = SHIP.y): Actor => scenery(blink ? 'ufo2' : 'ufo1', x, y, { gone: 'ship' })
+const ray = (shimmer = false): Actor => scenery(shimmer ? 'beamB' : 'beamA', BEAM.x, BEAM.y, { gone: 'ship' })
 /** A specimen `h` pixels tall held in the beam, `up` pixels above where it floats; `grounded`: standing on the grass. */
 const held = (sprite: string, h: number, up = 0, opts: Partial<Actor> = {}): Actor => scenery(sprite, SPOT, 14 - h - up, opts)
 const grounded = (sprite: string, h: number, opts: Partial<Actor> = {}): Actor => scenery(sprite, SPOT, 16 - h, opts)
@@ -571,6 +588,606 @@ const events: Theme['events'] = {
   ),
 }
 
+// ---------------------------------------------------------------------------
+// Actions: the buttons under the scene. You are a gloved hand from the top of
+// the scene. Each press plays one of the tier's takes, picked at random; the
+// target's patience wears down with repeated presses (see `pressAction`).
+// ---------------------------------------------------------------------------
+
+/** The hand (8 by 8) around the probe of the current effort: the probe hangs from the fist, its tip 13 pixels under the hand's top. */
+const you = (x: number, y: number, opts: Partial<Actor> = {}): Actor[] => [weapon(x + 2, y + 5, opts), at('hand', x, y, opts)]
+/** The empty hand. */
+const fist = (x: number, y: number, opts: Partial<Actor> = {}): Actor => at('hand', x, y, opts)
+// Who is who, for the rests: the cow is `cow`, the crew member (and what it does) is `crew`, the saucer `ship`.
+const SLEEPING_COW = grounded('cow', 10, { flipY: true, gone: 'cow' })
+const COW_UP = grounded('cow', 10, { gone: 'cow' })
+const COW_LEFT = grounded('cow', 10, { flip: true, gone: 'cow' })
+const crewOf = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'crew' }))
+const crewman = (pose: string, x = 0, y = 0, swap?: Record<string, string>): Actor => ({ ...hero(pose, x, y, swap), gone: 'crew' })
+/** A take that is only picked while these are present. */
+const needing = (needs: string[], anim: Animation): Animation => ({ ...anim, needs })
+const SPARK = (x: number, y: number): Actor => scenery('spark', x, y)
+const puff = (x: number, y: number): Actor => scenery('puff1', x, y)
+/** The flash of a camera or the flashy thing: the whole scene goes pale for a frame. */
+const FLASH: Actor = at('flash', -12, -46, { backdrop: true })
+/** A reaction: one-shot, every frame held twice as long as written (a line stays about a second at 6 fps). */
+const take = (...frames: Frame[]): Animation => once(...frames.map(f => ({ ...f, hold: 2 * Math.max(1, f.hold ?? 1) })))
+/** The same caption on every frame from `from` on. */
+const captioned = (caption: string, frames: Frame[], from = 2): Frame[] => frames.map((f, k) => (k >= from ? { ...f, caption } : f))
+
+// 1. Probe the crew member. The hand comes down on the head from the top of
+// the scene (it rises with the officers' height, as a prop over the head
+// does): in from above, a hover, the poke, then the reaction.
+const AX = 4
+const A_ENTER = -22
+const A_HOVER = -16
+const A_POKE = -14
+/** The crew member and the hand at `y` (null: gone), over the sleeping cow and the saucer. */
+const crewScene = (y: number | null, crew: Actor[], more: Actor[] = [], blink = false): Actor[] => [
+  ...crew,
+  ship(blink),
+  SLEEPING_COW,
+  ...(y === null ? [] : you(AX, y, y <= A_ENTER ? { offstage: true } : {})),
+  ...more,
+]
+const aStart = (crew: Actor[] = [hero('stand')]): Frame[] => [
+  { actors: crewScene(A_ENTER, crew), hold: 1 },
+  { actors: crewScene(A_HOVER, crew), hold: 1 },
+  { actors: crewScene(A_POKE, crew, [SPARK(5, -3)], true), hold: 1 },
+]
+/** The crew's line beside the head: right of the officers' capes, under the saucer's rows (a lifted line landed in the saucer). */
+const aside = (text: string, y = -2, color = INK): SceneText => ({ ...say(text, 18, y, color), gone: 'crew' })
+/** The crew walks into the beam, goes up, and the saucer flies off: what both snapped takes end with. */
+const crewLeaves = (texts: SceneText[] = []): Frame[] => [
+  { actors: [hero('walk', 6), ship(), ray(), SLEEPING_COW], texts, hold: 1 },
+  { actors: [hero('stand', 18, 0, BEAMED), ship(true), ray(true), SLEEPING_COW], texts, hold: 1 },
+  { actors: [ship(), ray(), SLEEPING_COW], hold: 1 },
+  { actors: [scenery('ufo2', 26, -20, { offstage: true }), SLEEPING_COW], hold: 1 },
+  { actors: [scenery('ufo1', 31, -27, { offstage: true }), SLEEPING_COW], hold: 1 },
+  { actors: [SLEEPING_COW], texts: [say('...', 24, 2)], hold: 3 },
+]
+const probeCrew: ThemeAction = {
+  id: 'crew',
+  label: 'PROBE ALIEN',
+  restLabel: '(ALIEN GONE)',
+  gone: ['crew', 'ship'],
+  needs: ['crew'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Probed the crew. The crew has notes.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('stand', 0, -2)]), texts: [aside('!')], hold: 2 },
+          { actors: crewScene(A_HOVER, [hero('stand')], [], true), texts: [aside('HEY.')], hold: 3 },
+          { actors: crewScene(null, [hero('stand')]), texts: [aside('HEY.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Probing an alien. Oddly, he has a permit.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('itemGet'), at('permit', 4, -7)]), texts: [aside('I HAVE A PERMIT.', -4)], hold: 3 },
+          { actors: crewScene(A_HOVER, [hero('itemGet'), at('permit', 4, -7)], [], true), texts: [aside('I HAVE A PERMIT.', -4)], hold: 3 },
+          { actors: crewScene(null, [hero('stand'), at('permit', 4, -7)]), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The crew is ticklish. This is classified.', [
+          ...aStart(),
+          { actors: crewScene(A_POKE, [hero('itemGet')], [SPARK(5, -3)]), texts: [aside('HEE HEE')], hold: 2 },
+          { actors: crewScene(A_HOVER, [hero('stand')], [], true), texts: [aside('HA')], hold: 1 },
+          { actors: crewScene(A_POKE, [hero('itemGet')], [SPARK(6, -2)]), texts: [aside('STOP')], hold: 2 },
+          { actors: crewScene(null, [hero('stand')], [], true), texts: [aside('...')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Probed. No reaction. Suspicious.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('stand')]), hold: 1 },
+          { actors: crewScene(A_POKE, [hero('stand')], [SPARK(5, -3)], true), texts: [aside('...')], hold: 1 },
+          { actors: crewScene(A_HOVER, [hero('stand')]), texts: [aside('...')], hold: 1 },
+          { actors: crewScene(A_POKE, [hero('stand')], [SPARK(6, -2)], true), texts: [aside('...')], hold: 1 },
+          { actors: crewScene(A_HOVER, [hero('sleep')]), texts: [aside('z', -4)], hold: 3 },
+          { actors: crewScene(null, [hero('sleep')], [], true), texts: [aside('Z', -6)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The crew makes a note. About you.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('stand'), at('clipboard', 16, 6)]), texts: [aside('HM.')], hold: 2 },
+          { actors: crewScene(A_HOVER, [hero('stand'), at('clipboard', 16, 6)], [], true), texts: [aside('NOTED.')], hold: 3 },
+          { actors: crewScene(null, [hero('stand'), at('clipboard', 16, 6)]), texts: [aside('NOTED.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The crew admires your probe. Professionally.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('stand')]), texts: [aside('OOH.')], hold: 2 },
+          { actors: crewScene(A_HOVER, [hero('stand')], [], true), texts: [aside('NICE PROBE.')], hold: 3 },
+          { actors: crewScene(A_HOVER, [hero('stand')]), texts: [aside('REGULATION?')], hold: 3 },
+          { actors: crewScene(null, [hero('stand')], [], true), hold: 1 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The crew probes back. For science.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('itemGet'), weapon(6, -11, { flipY: true })], [SPARK(5, -12)]), texts: [aside('YOUR TURN.', -4)], hold: 2 },
+          { actors: crewScene(A_ENTER, [hero('itemGet'), weapon(6, -11, { flipY: true })], [SPARK(6, -14)], true), texts: [aside('YOUR TURN.', -4)], hold: 2 },
+          { actors: crewScene(null, [hero('itemGet'), weapon(6, -11, { flipY: true })]), texts: [aside('HA.', -4)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('A complaint has been filed. In triplicate.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('stand'), at('clipboard', 16, 6)]), texts: [aside('FORM 27-B.')], hold: 3 },
+          { actors: crewScene(A_HOVER, [hero('stand'), at('clipboard', 16, 6)], [], true), texts: [aside('IN TRIPLICATE.')], hold: 3 },
+          { actors: crewScene(null, [hero('stand'), at('clipboard', 16, 6)]), texts: [aside('IN TRIPLICATE.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The crew would like you to stop.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('stand'), ...sweat]), texts: [aside('DO YOU MIND?')], hold: 3 },
+          { actors: crewScene(A_HOVER, [hero('stand'), ...sweat], [], true), texts: [aside('DO YOU MIND?')], hold: 2 },
+          { actors: crewScene(null, [hero('stand'), ...sweat]), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Personal space. The crew steps aside.', [
+          { actors: crewScene(A_ENTER, [hero('stand')]), hold: 1 },
+          { actors: crewScene(A_HOVER, [hero('walk', -3)]), hold: 1 },
+          { actors: crewScene(A_POKE, [hero('stand', -3)], [], true), hold: 2 },
+          { actors: crewScene(A_HOVER, [hero('stand', -3)]), texts: [say('MISSED.', 14, -2)], hold: 3 },
+          { actors: crewScene(null, [hero('walk', -1)], [], true), hold: 1 },
+          { actors: crewScene(null, [hero('stand')]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The crew stares. The crew is not amused.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('stand')]), texts: [aside('...')], hold: 3 },
+          { actors: crewScene(A_HOVER, [hero('stand')], [], true), texts: [aside('REALLY.')], hold: 3 },
+          { actors: crewScene(null, [hero('stand')]), texts: [aside('REALLY.')], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('Mothership notified. Staff are being probed.', [
+          ...aStart(),
+          { actors: [...dial(2, 1), SLEEPING_COW, ...you(AX, A_HOVER)], texts: [say('bip', 15, 8)], hold: 2 },
+          { actors: [...dial(0, 2), SLEEPING_COW, ...you(AX, A_HOVER)], hold: 1 },
+          { actors: [...dial(2, 3, true), SLEEPING_COW, ...you(AX, A_HOVER)], texts: [say('bip', 15, 8)], hold: 2 },
+          { actors: [...dial(0, 3), SLEEPING_COW, ...you(AX, A_ENTER, { offstage: true })], texts: [say('SEND HELP.', 14, -12, GOLD)], hold: 3 },
+          { actors: [...dial(0, 0, true), SLEEPING_COW], texts: [say('SEND HELP.', 14, -12, GOLD)], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Probe confiscated. Visit the gift shop.', [
+          ...aStart(),
+          { actors: [hero('stand'), ship(false, HALF.x, HALF.y - 8), SLEEPING_COW, ...you(AX, A_HOVER)], hold: 1 },
+          { actors: [hero('stand'), ship(true, 1, -23), scenery('beamTallA', 1, -16), SLEEPING_COW, ...you(AX, A_HOVER)], hold: 1 },
+          // The probe alone goes up the beam; the fist stays, empty.
+          { actors: [hero('stand'), ship(false, 1, -23), scenery('beamTallB', 1, -16), SLEEPING_COW, weapon(AX + 2, A_HOVER + 2), fist(AX, A_HOVER)], hold: 1 },
+          { actors: [hero('stand'), ship(true, 1, -23), scenery('beamTallA', 1, -16), SLEEPING_COW, weapon(AX + 2, A_HOVER - 8, { offstage: true }), fist(AX, A_HOVER)], hold: 1 },
+          { actors: [hero('itemGet'), ship(false, 1, -23), SLEEPING_COW, fist(AX, A_HOVER)], texts: [aside('CONFISCATED.', -4)], hold: 3 },
+          { actors: [hero('itemGet'), ship(true, HALF.x, HALF.y - 8), SLEEPING_COW, fist(AX, A_ENTER, { offstage: true })], texts: [aside('CONFISCATED.', -4)], hold: 2 },
+          { actors: [hero('stand'), ship(), SLEEPING_COW], hold: 2 },
+        ]),
+      ),
+      needing(['cow'], take(
+        ...captioned('The cow has been deployed. Good luck.', [
+          ...aStart(),
+          { actors: [hero('stand'), ship(), COW_LEFT, ...you(AX, A_HOVER)], texts: [say('MOO!', 24, 2)], hold: 2 },
+          { actors: [hero('stand'), ship(true), grounded('cow', 10, { flip: true }), ...you(AX, A_HOVER)], texts: [say('MOO!', 24, 2)], hold: 1 },
+          { actors: [hero('itemGet'), ship(), at('cow', 12, 6, { flip: true, fixed: true }), puff(26, 10), ...you(AX, A_HOVER)], texts: [aside('MOO!')], hold: 1 },
+          { actors: [hero('itemGet'), ship(true), at('cow', 2, 6, { flip: true, fixed: true }), puff(16, 10), ...you(AX, A_ENTER, { offstage: true })], hold: 1 },
+          { actors: [hero('itemGet'), ship(), at('cow', -6, 6, { flip: true, fixed: true }), puff(8, 10)], hold: 2 },
+          { actors: [hero('stand'), ship(true), at('cow', -6, 6, { flip: true, fixed: true })], texts: [aside('GOOD COW.')], hold: 3 },
+        ]),
+      )),
+    ],
+    snapped: [
+      take(
+        ...captioned('The crew has left. Back in a bit.', [
+          ...aStart(),
+          { actors: crewScene(A_HOVER, [hero('stand')]), texts: [aside('NOPE.')], hold: 2 },
+          { actors: crewScene(null, [hero('stand')], [], true), texts: [aside('NOPE.')], hold: 1 },
+          ...crewLeaves([say('NOPE.', 18, -2)]),
+        ]),
+      ),
+      take(
+        ...captioned('Specimen acquired: you. Welcome aboard.', [
+          ...aStart(),
+          { actors: [hero('stand'), ship(false, HALF.x, HALF.y - 8), SLEEPING_COW, ...you(AX, A_HOVER)], hold: 1 },
+          { actors: [hero('stand'), ship(true, 1, -23), scenery('beamTallA', 1, -16), SLEEPING_COW, ...you(AX, A_HOVER, { swap: { W: 'E', a: 'e', x: 'e' } })], hold: 1 },
+          { actors: [hero('stand'), ship(false, 1, -23), scenery('beamTallB', 1, -16), SLEEPING_COW, ...you(AX, A_HOVER - 4, { swap: { W: 'E', a: 'e', x: 'e' }, offstage: true })], hold: 1 },
+          { actors: [hero('stand'), ship(true, 1, -23), scenery('beamTallA', 1, -16), SLEEPING_COW, ...you(AX, A_ENTER - 2, { swap: { W: 'E', a: 'e', x: 'e' }, offstage: true })], hold: 1 },
+          { actors: [hero('itemGet'), ship(false, 1, -23), SLEEPING_COW], texts: [say('+1', 14, -12, GOLD)], hold: 3 },
+          { actors: [hero('itemGet'), ship(true, HALF.x, HALF.y - 8), SLEEPING_COW], texts: [aside('WELCOME ABOARD.', -4)], hold: 3 },
+          { actors: [hero('stand'), ship(), SLEEPING_COW], texts: [aside('WELCOME ABOARD.', -4)], hold: 1 },
+          ...crewLeaves(),
+        ]),
+      ),
+    ],
+  },
+  rest: loop(
+    { actors: [SLEEPING_COW], texts: [say('z', 29, 2)], hold: 6 },
+    { actors: [SLEEPING_COW], texts: [say('Z', 30, 0)], hold: 6 },
+    { actors: [SLEEPING_COW], hold: 6 },
+    { actors: [COW_LEFT], texts: [say('...', 24, 2)], hold: 6 },
+    { actors: [COW_LEFT], texts: [say('moo?', 24, 2)], hold: 6 },
+    { actors: [COW_LEFT], hold: 6 },
+  ),
+}
+
+// 2. Probe the cow. The saucer backs off upward while you reach in; the hand
+// is scenery here (it does not rise with the officers).
+const CX = 24
+const C_ENTER = -24
+const C_HOVER = -14
+const C_POKE = -6
+const SHIP_UP = { x: SHIP.x, y: SHIP.y - 6 }
+const shipUp = (blink = false): Actor => ship(blink, SHIP_UP.x, SHIP_UP.y)
+/** The crew watching, the saucer up, the cow (awake) or `cow` in its place, the hand at `y` (null: gone). */
+const cowScene = (y: number | null, cow: Actor[] = [COW_UP], more: Actor[] = [], crew: Actor[] = [hero('stand')], blink = false): Actor[] => [
+  ...crewOf(crew),
+  shipUp(blink),
+  ...cow,
+  ...(y === null ? [] : you(CX, y, { fixed: true, ...(y <= C_ENTER ? { offstage: true } : {}) })),
+  ...more,
+]
+const cStart = (cow: Actor[] = [COW_UP]): Frame[] => [
+  { actors: cowScene(C_ENTER, cow), hold: 1 },
+  { actors: cowScene(C_HOVER, cow), hold: 1 },
+  { actors: cowScene(C_POKE, cow, [SPARK(23, 3)], undefined, true), hold: 1 },
+]
+/** The cow's line, over its back, under the hand. */
+const moo = (text: string, color = INK): SceneText => ({ ...say(text, 26, 2, color), gone: 'cow' })
+/** The cow walks off to the right and the crew is left looking at the spot. */
+const cowLeaves = (): Frame[] => [
+  { actors: cowScene(null, [at('cow', 30, 6, { fixed: true, offstage: true })], [puff(26, 12)], undefined, true), hold: 1 },
+  { actors: cowScene(null, [at('cow', 38, 6, { fixed: true, offstage: true })], [puff(30, 12)]), hold: 1 },
+  { actors: cowScene(null, [], [], [hero('stand'), ...sweat], true), texts: [aside('...')], hold: 3 },
+]
+const probeCow: ThemeAction = {
+  id: 'cow',
+  label: 'PROBE COW',
+  restLabel: '(COW GONE)',
+  gone: ['cow'],
+  needs: ['cow'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Probed the cow. The cow says moo. Flatly.', [
+          ...cStart(),
+          { actors: cowScene(C_POKE), texts: [moo('MOO.')], hold: 3 },
+          { actors: cowScene(C_HOVER, undefined, [], undefined, true), texts: [moo('MOO.')], hold: 2 },
+          { actors: cowScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The cow has questions.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER, [COW_LEFT]), texts: [moo('MOO?')], hold: 3 },
+          { actors: cowScene(C_HOVER, [COW_LEFT], [], undefined, true), texts: [moo('MOO??')], hold: 3 },
+          { actors: cowScene(null, [COW_LEFT]), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The cow is used to this by now.', [
+          ...cStart(),
+          { actors: cowScene(C_POKE), texts: [moo('...')], hold: 2 },
+          { actors: cowScene(C_POKE, undefined, [SPARK(24, 4)], undefined, true), texts: [moo('munch')], hold: 2 },
+          { actors: cowScene(C_POKE), texts: [moo('...')], hold: 2 },
+          { actors: cowScene(null, undefined, [], undefined, true), texts: [moo('munch')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Probed. The cow files this under Tuesday.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER), texts: [moo('MOO.')], hold: 2 },
+          { actors: cowScene(C_HOVER, undefined, [], undefined, true), texts: [moo('TUESDAY.')], hold: 3 },
+          { actors: cowScene(null), texts: [moo('TUESDAY.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The cow kind of liked that. Tell no one.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER), texts: [moo('<3', 'p')], hold: 2 },
+          { actors: cowScene(C_HOVER, undefined, [], undefined, true), texts: [say('<3', 28, 0, 'p')], hold: 2 },
+          { actors: cowScene(C_HOVER, undefined, [], [hero('stand'), ...sweat]), texts: [say('<3', 30, -2, 'p'), aside('?')], hold: 3 },
+          { actors: cowScene(null, undefined, [], [hero('stand'), ...sweat], true), hold: 1 },
+        ]),
+      ),
+      needing(['crew'], take(
+        ...captioned('The crew would like its cow back.', [
+          ...cStart(),
+          { actors: cowScene(C_POKE, undefined, [], [hero('side')]), texts: [aside('HEY.')], hold: 2 },
+          { actors: cowScene(C_POKE, undefined, [], [hero('side')], true), texts: [aside('MINE.')], hold: 3 },
+          { actors: cowScene(null, undefined, [], [hero('side')]), texts: [aside('MINE.')], hold: 2 },
+        ]),
+      )),
+    ],
+    irritated: [
+      take(
+        ...captioned('The cow kicks. The hand regrets everything.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER, [grounded('cowKick', 10)], [SPARK(24, -1)]), texts: [moo('MOO!')], hold: 2 },
+          { actors: cowScene(C_ENTER, [grounded('cowKick', 10)], [SPARK(25, -4)], undefined, true), texts: [moo('MOO!')], hold: 1 },
+          { actors: cowScene(null, [COW_UP]), texts: [moo('HMPH.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The cow files an HR complaint. Form MOO-27.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER, [COW_LEFT, scenery('clipboard', 17, 7)]), texts: [moo('NOT AGAIN.')], hold: 3 },
+          { actors: cowScene(C_HOVER, [COW_LEFT, scenery('clipboard', 17, 7)], [], undefined, true), texts: [say('FORM MOO-27.', 24, 2)], hold: 3 },
+          { actors: cowScene(null, [COW_LEFT, scenery('clipboard', 17, 7)]), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The cow turns around. Pointedly.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER, [COW_LEFT]), texts: [moo('...')], hold: 1 },
+          { actors: cowScene(C_HOVER, [scenery('cowBack', 24, 6)], [], undefined, true), texts: [moo('...')], hold: 3 },
+          { actors: cowScene(null, [scenery('cowBack', 24, 6)]), hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The cow is staring directly at you.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER, [COW_LEFT]), hold: 2 },
+          { actors: cowScene(C_HOVER, [COW_LEFT], [], [hero('stand'), ...sweat], true), texts: [aside('!')], hold: 3 },
+          { actors: cowScene(C_ENTER, [COW_LEFT], [], [hero('stand'), ...sweat]), hold: 3 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The cow has sat down. Probing is cancelled.', [
+          ...cStart(),
+          { actors: cowScene(C_POKE, [grounded('cowSit', 8)]), texts: [moo('NO.')], hold: 3 },
+          { actors: cowScene(C_POKE, [grounded('cowSit', 8)], [], undefined, true), texts: [moo('NO.')], hold: 1 },
+          { actors: cowScene(C_HOVER, [grounded('cowSit', 8)]), hold: 1 },
+          { actors: cowScene(null, [grounded('cowSit', 8)], [], undefined, true), texts: [moo('NO.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The cow ate the probe. Send another.', [
+          ...cStart(),
+          { actors: [crewman('stand'), shipUp(), COW_LEFT, fist(CX, C_POKE, { fixed: true })], texts: [moo('CHOMP.')], hold: 2 },
+          { actors: [crewman('stand'), shipUp(true), COW_LEFT, fist(CX, C_HOVER, { fixed: true })], texts: [moo('munch')], hold: 2 },
+          { actors: [crewman('stand'), shipUp(), COW_LEFT, fist(CX, C_ENTER, { fixed: true, offstage: true })], texts: [moo('munch'), aside('?!')], hold: 2 },
+          { actors: [crewman('stand'), shipUp(true), COW_LEFT], texts: [moo('BURP.')], hold: 3 },
+        ]),
+      ),
+      needing(['crew'], take(
+        ...captioned('The crew defends the cow. Union rules.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER, undefined, [], [hero('walk', 3)]), hold: 1 },
+          { actors: cowScene(C_HOVER, undefined, [], [hero('itemGet', 6)], true), texts: [say('UNION RULES.', -4, -4)], hold: 3 },
+          { actors: cowScene(C_ENTER, undefined, [], [hero('itemGet', 6)]), texts: [say('UNION RULES.', -4, -4)], hold: 2 },
+          { actors: cowScene(null, undefined, [], [hero('walk', 3)], true), hold: 1 },
+          { actors: cowScene(null, undefined, [], [hero('stand')]), hold: 1 },
+        ]),
+      )),
+    ],
+    snapped: [
+      take(
+        ...captioned('The cow probes back. Nobody wins.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER, [COW_LEFT, weapon(30, -4, { fixed: true, flipY: true })], [SPARK(27, -10)]), texts: [moo('MOO.')], hold: 2 },
+          { actors: cowScene(C_ENTER, [COW_LEFT, weapon(30, -8, { fixed: true, flipY: true })], [SPARK(26, -14)], undefined, true), texts: [moo('MOO.')], hold: 2 },
+          { actors: cowScene(null, [COW_LEFT, weapon(30, -4, { fixed: true, flipY: true })], [], [hero('stand'), ...sweat]), texts: [aside('...')], hold: 3 },
+          { actors: cowScene(null, [COW_UP], [], [hero('stand'), ...sweat]), texts: [moo('MOO.')], hold: 2 },
+          ...cowLeaves(),
+        ]),
+      ),
+      take(
+        ...captioned('The cow has left the farm. Possibly for good.', [
+          ...cStart(),
+          { actors: cowScene(C_HOVER, [COW_UP]), texts: [moo('MOO.')], hold: 2 },
+          { actors: cowScene(C_ENTER, [COW_UP]), texts: [moo('BYE.')], hold: 2 },
+          ...cowLeaves(),
+        ]),
+      ),
+    ],
+  },
+  // The cow's rest: the beam is on, nothing in it; the crew checks.
+  rest: loop(
+    { actors: [crewman('stand'), ship(), ray()], hold: 6 },
+    { actors: [crewman('stand'), ship(true), ray(true)], texts: [{ ...say('...', 24, 2), gone: 'ship' }], hold: 6 },
+    { actors: [...crewOf(probing()), ship(), ray()], hold: 6 },
+    { actors: [...crewOf(probing(2)), ship(true), ray(true)], texts: [aside('...')], hold: 6 },
+    { actors: [crewman('stand'), ship(), ray()], texts: [aside('HMM.')], hold: 6 },
+  ),
+}
+
+// 3. Wave at the Feds. A palm waves at the top left; the man in black stands
+// where the specimens go (the saucer is nowhere to be seen, as when the Feds
+// take notes).
+const PX = 0
+const P_Y = -22
+const AGENT1 = scenery('agent1', AGENT.x, AGENT.y)
+const AGENT2 = scenery('agent2', AGENT.x, AGENT.y)
+const AGENT_WAVE = scenery('agentWave', AGENT.x, AGENT.y)
+/** Two beats of waving (the palm tilts), then the agent's answer. */
+const palmAt = (tilt: boolean, y = P_Y): Actor => scenery(tilt ? 'palm2' : 'palm', PX, y, y <= -24 ? { offstage: true } : {})
+const fedScene = (tilt: boolean | null, agents: Actor[] = [AGENT1], more: Actor[] = [], crew: Actor[] = [hero('stand')]): Actor[] => [
+  ...crewOf(crew),
+  ...agents,
+  ...(tilt === null ? [] : [palmAt(tilt)]),
+  ...more,
+]
+const fStart = (agents: Actor[] = [AGENT1]): Frame[] => [
+  { actors: fedScene(false, agents), hold: 1 },
+  { actors: fedScene(true, agents), hold: 1 },
+  { actors: fedScene(false, agents), hold: 1 },
+  { actors: fedScene(true, agents), hold: 1 },
+]
+/** Over the agent's head. */
+const fed = (text: string, x = 24, color = INK): SceneText => say(text, x, -2, color)
+/** Two agents walk the crew off to the right; the field is empty. */
+const CREW_TAKEN: Frame[] = [
+  { actors: fedScene(null, [scenery('agent1', 20, AGENT.y), scenery('agent1', 28, AGENT.y)], [], [hero('walk', 6)]), hold: 1 },
+  { actors: fedScene(null, [scenery('agent1', 28, AGENT.y), scenery('agent1', 36, AGENT.y, { offstage: true })], [], [hero('walk', 14)]), hold: 1 },
+  { actors: fedScene(null, [scenery('agent1', 36, AGENT.y, { offstage: true })], [], [{ ...hero('walk', 22), offstage: true }]), hold: 1 },
+  { actors: fedScene(null, [], [], []), texts: [say('...', 17, -2)], hold: 3 },
+]
+const waveFeds: ThemeAction = {
+  id: 'feds',
+  label: 'WAVE AT FEDS',
+  restLabel: '(FEDS BUSY)',
+  // The crew is taken in: the saucer stays. Waving needs no one in particular (the agent answers the palm).
+  gone: ['crew'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('You waved at the Feds. It went in the file.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT2]), texts: [fed('NOTED.')], hold: 3 },
+          { actors: fedScene(true, [AGENT2]), texts: [fed('NOTED.')], hold: 2 },
+          { actors: fedScene(null, [AGENT1]), hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The agent pretends not to see you.', [
+          ...fStart(),
+          { actors: fedScene(false, [scenery('agent1', AGENT.x, AGENT.y, { flip: true })]), texts: [fed('WHO, ME?', 22)], hold: 3 },
+          { actors: fedScene(true, [scenery('agent1', AGENT.x, AGENT.y, { flip: true })]), texts: [fed('...', 24)], hold: 2 },
+          { actors: fedScene(null, [AGENT1]), hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The agent waves back. Awkwardly.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT_WAVE]), texts: [fed('HI.')], hold: 2 },
+          { actors: fedScene(true, [AGENT_WAVE]), texts: [fed('HI.')], hold: 2 },
+          { actors: fedScene(false, [AGENT1]), texts: [fed('...')], hold: 3 },
+          { actors: fedScene(null, [AGENT1]), hold: 1 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The agent reminds you: nothing to see here.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT1]), texts: [fed('NOTHING TO SEE.', 20)], hold: 3 },
+          { actors: fedScene(true, [AGENT1]), texts: [fed('NOTHING TO SEE.', 20)], hold: 2 },
+          { actors: fedScene(null, [AGENT1]), texts: [fed('MOVE ALONG.', 20)], hold: 3 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The agent adjusts his sunglasses. Ominously.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT1]), texts: [say('*', 26, 5, GOLD)], hold: 1 },
+          { actors: fedScene(true, [AGENT1]), texts: [say('*', 30, 5, GOLD)], hold: 1 },
+          { actors: fedScene(false, [AGENT1]), texts: [say('*', 26, 5, GOLD)], hold: 1 },
+          { actors: fedScene(true, [AGENT1]), texts: [fed('...')], hold: 3 },
+          { actors: fedScene(null, [AGENT1]), hold: 2 },
+        ], 4),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('Suspicious. The pen moves faster.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT2]), texts: [fed('SUSPICIOUS.', 20)], hold: 1 },
+          { actors: fedScene(true, [AGENT1]), texts: [fed('SUSPICIOUS.', 20)], hold: 1 },
+          { actors: fedScene(false, [AGENT2]), texts: [fed('VERY.', 24)], hold: 1 },
+          { actors: fedScene(true, [AGENT1]), texts: [fed('VERY.', 24)], hold: 1 },
+          { actors: fedScene(null, [AGENT2]), texts: [fed('!!', 26)], hold: 3 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The agent talks into his sleeve. About you.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT1], [scenery('wave1', 26, -4)]), texts: [fed('COPY THAT.', 20, 'c')], hold: 1 },
+          { actors: fedScene(true, [AGENT1], [scenery('wave1', 26, -4), scenery('wave2', 25, -7)]), texts: [fed('COPY THAT.', 20, 'c')], hold: 1 },
+          { actors: fedScene(false, [AGENT1], [scenery('wave1', 26, -4), scenery('wave2', 25, -7), scenery('wave3', 24, -11)]), texts: [fed('COPY THAT.', 20, 'c')], hold: 3 },
+          { actors: fedScene(null, [AGENT1], [scenery('wave3', 24, -11)]), hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('Photographed. For the file.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT1, scenery('camera', 23, 5)]), texts: [fed('SMILE.')], hold: 2 },
+          { actors: [FLASH, ...fedScene(true, [AGENT1, scenery('camera', 23, 5)])], hold: 1 },
+          { actors: fedScene(false, [AGENT1, scenery('camera', 23, 5)], [], [hero('stand'), ...sweat]), texts: [fed('THANKS.')], hold: 3 },
+          { actors: fedScene(null, [AGENT1], [], [hero('stand'), ...sweat]), hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('Please stop waving. That is an order.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT1]), texts: [fed('STOP WAVING.', 20)], hold: 3 },
+          { actors: fedScene(true, [AGENT1]), texts: [fed('STOP WAVING.', 20)], hold: 1 },
+          { actors: fedScene(false, [AGENT1]), texts: [fed('THAT IS AN ORDER.', 18)], hold: 3 },
+          { actors: fedScene(null, [AGENT1]), hold: 1 },
+        ], 4),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('Backup has arrived. He also has a notepad.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT1], [puff(19, 6)]), texts: [fed('BACKUP.', 16)], hold: 1 },
+          { actors: fedScene(true, [AGENT1, scenery('agent2', 18, AGENT.y)], [puff(18, 4)]), texts: [fed('BACKUP.', 16)], hold: 2 },
+          { actors: fedScene(false, [AGENT2, scenery('agent2', 18, AGENT.y)]), texts: [fed('NOTED.', 16), fed('NOTED.', 26)], hold: 3 },
+          { actors: fedScene(null, [AGENT2, scenery('agent2', 18, AGENT.y)], [], [hero('stand'), ...sweat]), hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('Flashy thing. What were we talking about?', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT1, scenery('wiper', 33, -2)]), texts: [fed('LOOK HERE.', 20)], hold: 2 },
+          { actors: [FLASH, ...fedScene(true, [AGENT1, scenery('wiper', 33, -2)])], hold: 1 },
+          { actors: fedScene(null, [AGENT1]), texts: [aside('?')], hold: 2 },
+          { actors: fedScene(null, [AGENT1]), texts: [aside('?'), fed('NOTHING HAPPENED.', 18)], hold: 3 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The agent would like a word. Several words.', [
+          ...fStart(),
+          { actors: fedScene(false, [scenery('agent1', 22, AGENT.y)]), hold: 1 },
+          { actors: fedScene(true, [scenery('agent1', 19, AGENT.y)]), texts: [fed('A WORD.', 18)], hold: 3 },
+          { actors: fedScene(false, [scenery('agent1', 19, AGENT.y)], [], [hero('stand'), ...sweat]), texts: [fed('SEVERAL.', 18)], hold: 3 },
+          { actors: fedScene(null, [scenery('agent1', 19, AGENT.y)], [], [hero('stand'), ...sweat]), hold: 1 },
+        ], 4),
+      ),
+    ],
+    snapped: [
+      needing(['crew'], take(
+        ...captioned('The Feds are here. Nobody waves at anybody.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT1, scenery('agent1', 18, AGENT.y)], [puff(19, 6)]), hold: 1 },
+          { actors: fedScene(true, [AGENT1, scenery('agent1', 18, AGENT.y), scenery('agent1', 33, AGENT.y, { offstage: true })], [puff(30, 6)]), hold: 1 },
+          { actors: fedScene(null, [AGENT2, scenery('agent2', 18, AGENT.y), scenery('agent2', 33, AGENT.y, { offstage: true })], [], [hero('stand'), ...sweat]), texts: [fed('...', 20), fed('...', 28)], hold: 4 },
+          { actors: fedScene(null, [AGENT2, scenery('agent2', 18, AGENT.y), scenery('agent2', 33, AGENT.y, { offstage: true })], [], [hero('stand'), ...sweat]), texts: [aside('UH.')], hold: 3 },
+          { actors: fedScene(null, [AGENT1, scenery('agent1', 18, AGENT.y)], [], [hero('stand'), ...sweat]), texts: [fed('COME WITH US.', 18)], hold: 2 },
+          ...CREW_TAKEN,
+        ], 4),
+      )),
+      needing(['crew'], take(
+        ...captioned('The crew was taken in for questioning.', [
+          ...fStart(),
+          { actors: fedScene(false, [AGENT1, scenery('agent1', 18, AGENT.y)]), texts: [fed('COME WITH US.', 18)], hold: 3 },
+          ...CREW_TAKEN,
+        ], 4),
+      )),
+    ],
+  },
+  // The Feds' rest: the crew is being questioned somewhere; an agent keeps the field.
+  rest: loop(
+    { actors: [AGENT1], hold: 8 },
+    { actors: [AGENT2], texts: [fed('...')], hold: 6 },
+    { actors: [scenery('agent1', AGENT.x, AGENT.y, { flip: true })], hold: 8 },
+    { actors: [AGENT1], texts: [fed('NOTHING TO SEE.', 20)], hold: 6 },
+  ),
+}
+
+const actions: ThemeAction[] = [probeCrew, probeCow, waveFeds]
+
 const SMALL_POSES = { stand: 'stand', walk: 'walk', attack: 'side', itemGet: 'itemGet', sleep: 'sleep', side: 'side' }
 const HAT_POSES = { stand: 'hatStand', walk: 'hatWalk', attack: 'hatSide', itemGet: 'hatItemGet', sleep: 'hatSleep', side: 'hatSide' }
 const BIG_POSES = { stand: 'bigStand', walk: 'bigWalk', attack: 'bigSide', itemGet: 'bigItemGet', sleep: 'bigSleep', side: 'bigSide' }
@@ -612,6 +1229,7 @@ export const alien: Theme = {
   cold,
   overkill,
   events,
+  actions,
   scene: {
     height: 44,
     anchor: { x: 12, y: 24 },

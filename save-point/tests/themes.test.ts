@@ -5,8 +5,20 @@ import { oneOf } from '../hooks/themes/kit'
 import { hex, quarter, rotate } from '../hooks/themes/pixel'
 import {
   aboutLines,
+  actionButtons,
+  actionRows,
   activityFor,
   animationsOf,
+  currentFrame,
+  heatNow,
+  pickFresh,
+  playingAnimation,
+  pressAction,
+  reactionsFor,
+  restingAction,
+  goneNow,
+  takeChoices,
+  tierOf,
   barLayout,
   BAR_ROWS,
   counterText,
@@ -54,7 +66,7 @@ import {
 } from '../hooks/themes/scene'
 import type { BarState, MeterData, SceneState } from '../hooks/themes/scene'
 import { TEXT_COLORS } from '../hooks/themes/types'
-import type { Actor, BarWidget, Frame, HeroForm, SceneText, Theme } from '../hooks/themes/types'
+import type { Actor, BarWidget, Frame, HeroForm, SceneText, Theme, ThemeAction } from '../hooks/themes/types'
 
 const base: SceneState = {
   tick: 0,
@@ -158,10 +170,11 @@ function everyFrame(theme: Theme, hero: SceneState['hero'], weapon: SceneState['
   for (const { key, anim, state, event } of animationsOf(theme)) {
     takes(anim).forEach((frames, variant) => {
       const [group, name] = key.split('.') as ['states' | 'overkill' | 'cold', string]
-      const shown: Theme = event ? theme : { ...theme, [group]: { ...theme[group], [name]: { frames, loop: true } } }
+      // A reaction (`state.event` set) plays as given; a loop with takes is shown one take at a time.
+      const shown: Theme = event || state.event || state.rest ? theme : { ...theme, [group]: { ...theme[group], [name]: { frames, loop: true } } }
       let t = 0
       frames.forEach((f, k) => {
-        const playing = event ? { name: event, startTick: 0, vars: { pct: '50', level: 'alert', name: 'X', weapon: 'Y' }, variant } : null
+        const playing = event ? { name: event, startTick: 0, vars: { pct: '50', level: 'alert', name: 'X', weapon: 'Y' }, variant } : (state.event ?? null)
         each({ ...base, ...state, hero, weapon, tick: t, since: 0, event: playing }, `${key}#${variant} f${k} ${hero}`, shown)
         t += Math.max(1, f.hold ?? 1)
       })
@@ -263,6 +276,19 @@ for (const theme of PACKS) {
       }
       expect(found).toEqual([])
     })
+    test('every take and rest loop stays inside the scene with each action\'s rest in force', { timeoutMs: 30_000 }, () => {
+      const found: string[] = []
+      for (const a of theme.actions ?? []) {
+        if (!a.gone?.length) continue
+        for (const hero of HERO_TIERS) {
+          everyFrame(theme, hero, 'high', (s, where, shown) => {
+            if (!where.startsWith('actions.')) return
+            for (const c of sceneClips(shown, { ...s, gone: a.gone }, 48)) found.push(`${where} with ${a.id} resting: ${c.what}`)
+          })
+        }
+      }
+      expect(found).toEqual([])
+    })
     test('no prop jumps under a taller form', () => {
       expect(liftStraddles(theme)).toEqual([])
     })
@@ -284,6 +310,28 @@ for (const theme of PACKS) {
           }
           for (let col = left; col < left + L.slotW; col++) expect(`${tier}@${columns} top:${col}:${isGround(col, top)}`).toBe(`${tier}@${columns} top:${col}:true`)
         })
+      }
+    })
+    test('actions: three at most, labels and captions fit a 48-column pane, every tier has a take', () => {
+      const actions = theme.actions ?? []
+      expect(actions.length <= 3).toBe(true)
+      if (!actions.length) return
+      // The row as the terminal draws plain buttons: `1: LABEL`, two spaces between.
+      const row = (labels: string[]) => labels.map((l, i) => `${i + 1}: ${l}`).join('  ')
+      expect(row(actions.map(a => a.label)).length <= 48).toBe(true)
+      expect(row(actions.map(a => a.restLabel)).length <= 48).toBe(true)
+      for (const a of actions) {
+        for (const tier of ['calm', 'irritated', 'fedUp', 'snapped'] as const) {
+          expect(`${a.id}.${tier}:${a.reactions[tier].length > 0}`).toBe(`${a.id}.${tier}:true`)
+          for (const t of a.reactions[tier]) {
+            expect(`${a.id}.${tier} loop:${t.loop}`).toBe(`${a.id}.${tier} loop:false`)
+            const captions = t.frames.map(f => f.caption).filter((c): c is string => Boolean(c))
+            expect(`${a.id}.${tier} captioned:${captions.length > 0}`).toBe(`${a.id}.${tier} captioned:true`)
+            for (const c of captions) expect(`${c}:${c.length <= 46}`).toBe(`${c}:true`)
+            // Long enough to see, short enough that a session moment behind it does not wait forever.
+            expect(`${a.id}.${tier} ticks:${duration(t) >= 8 && duration(t) <= 60}`).toBe(`${a.id}.${tier} ticks:true`)
+          }
+        }
       }
     })
     test('one-shots hold their last frame', () => {
@@ -359,6 +407,22 @@ describe('animation step', () => {
     p = stepScene(theme, { ...p, tick: 4, live: 'editing', started: 'editing' }, o)
     expect([p.activity, p.since, p.dwellUntil]).toEqual(['editing', 4, 4 + duration(theme.states.editing)])
   })
+  test('a tool of the kind already on screen keeps the loop going; its take is not restarted', () => {
+    const reading = theme.states.reading
+    let p = stepScene(theme, { ...idle, tick: 1, live: 'reading', started: 'reading' }, o)
+    const cycle = duration(reading)
+    // The dwell is over and the loop is mid-cycle when the next read starts: the clock stays at 1.
+    p = stepScene(theme, { ...p, tick: cycle + 3 }, o)
+    p = stepScene(theme, { ...p, tick: cycle + 4, started: 'reading' }, o)
+    expect([p.activity, p.since]).toEqual(['reading', 1])
+    // The dwell now covers the rest of the take on screen, not a whole new one.
+    expect(p.dwellUntil - (cycle + 4)).toBeLessThanOrEqual(cycle)
+    expect(p.dwellUntil).toBeGreaterThan(cycle + 4)
+    // After a moment the loop was off screen: it starts afresh.
+    let q = stepScene(theme, { ...idle, tick: 1, queue: [{ ...success, at: 0 }] }, o)
+    q = stepScene(theme, { ...q, tick: 1 + duration(theme.events.toolSuccess), live: 'reading', started: 'reading' }, o)
+    expect([q.activity, q.since]).toEqual(['reading', 1 + duration(theme.events.toolSuccess)])
+  })
   test('a loop started while a moment plays begins when the moment ends', () => {
     let p = stepScene(theme, { ...idle, tick: 1, queue: [{ ...success, at: 0 }] }, o)
     p = stepScene(theme, { ...p, tick: 2, live: 'thinking', started: 'editing', queue: [{ ...success, at: 2 }] }, o)
@@ -368,6 +432,173 @@ describe('animation step', () => {
     expect([p.activity, p.since, p.playing, p.pending]).toEqual(['editing', end, null, false])
     p = stepScene(theme, { ...p, tick: end + duration(theme.states.editing) }, o)
     expect([p.activity, p.playing?.name]).toEqual(['thinking', 'toolSuccess'])
+  })
+})
+
+describe('actions', () => {
+  // Every pack has actions now: the baseline without them is zelda's pack with its buttons taken off.
+  const zelda: Theme = { ...resolveTheme('zelda').theme, actions: undefined }
+  const take = (n: number, caption = `take ${n}`) => ({ frames: [{ actors: [], hold: n, caption }], loop: false })
+  // A theme with one action: six calm takes, two irritated, one fed up, one snapped.
+  const theme: Theme = {
+    ...zelda,
+    actions: [
+      {
+        id: 'poke',
+        label: 'POKE',
+        restLabel: '(RESTING)',
+        reactions: { calm: [take(2), take(2), take(2), take(2), take(2), take(2)], irritated: [take(3), take(3)], fedUp: [take(4)], snapped: [take(5)] },
+      },
+    ],
+  }
+  const idle = { ...sceneStart(), tick: 10 }
+  const o = { maxAge: 30, maxDwell: 15 }
+  const po = { heatDecay: 60, rest: 180 }
+  test('heat climbs two points per tier and cools one point per decay', () => {
+    expect([0, 1, 2, 3, 4, 5, 6, 9].map(tierOf)).toEqual(['calm', 'calm', 'irritated', 'irritated', 'fedUp', 'fedUp', 'snapped', 'snapped'])
+    const h = { heat: 4, at: 100, restUntil: 0, recent: {} }
+    expect([heatNow(undefined, 5, 60), heatNow(h, 100, 60), heatNow(h, 159, 60), heatNow(h, 160, 60), heatNow(h, 1000, 60)]).toEqual([0, 4, 4, 3, 0])
+  })
+  test('a press queues a reaction at the front and the step starts it at once, dwell or not', () => {
+    const waiting = stepScene(theme, { ...idle, live: 'thinking', started: 'reading', queue: [{ name: 'toolSuccess', at: 9, vars: {} }] }, o)
+    expect([waiting.playing, waiting.dwellUntil > waiting.tick]).toEqual([null, true])
+    const pressed = pressAction(theme, { ...waiting, tick: 11 }, 'poke', po)
+    expect(pressed.queue.map(q => q.name)).toEqual(['action:poke', 'toolSuccess'])
+    expect(pressed.actions.poke).toMatchObject({ heat: 1, at: 11, restUntil: 0 })
+    const p = stepScene(theme, { ...pressed, tick: 12 }, o)
+    expect(p.playing).toMatchObject({ name: 'action:poke', action: { id: 'poke', tier: 'calm' }, startTick: 12 })
+    // The moment behind it aged nothing while it played.
+    expect(p.queue).toEqual([{ name: 'toolSuccess', at: 11, vars: {} }])
+    // The reaction ends; the reading loop still gets its dwell, then the moment plays.
+    const end = 12 + 2
+    const after = stepScene(theme, { ...p, tick: end }, o)
+    expect([after.playing, after.activity]).toEqual([null, 'reading'])
+    const then = stepScene(theme, { ...after, tick: Math.max(end, after.dwellUntil) }, o)
+    expect(then.playing?.name).toBe('toolSuccess')
+  })
+  test('the frame on screen is the take picked', () => {
+    const pressed = pressAction(theme, idle, 'poke', po)
+    const p = stepScene(theme, { ...pressed, tick: 11 }, o)
+    const frame = currentFrame(theme, { ...base, tick: 11, event: p.playing })
+    expect(frame.caption).toBe('take 2')
+    expect(playingAnimation(theme, p.playing!)).toBe(theme.actions![0]!.reactions.calm[p.playing!.variant!])
+  })
+  test('fast presses escalate: the newest waits, never a backlog', () => {
+    let p = stepScene(theme, pressAction(theme, idle, 'poke', po), o)
+    for (const tick of [11, 12, 13, 14]) p = pressAction(theme, { ...p, tick }, 'poke', po)
+    expect(p.queue.filter(q => q.action).length).toBe(1)
+    expect([p.actions.poke!.heat, p.queue[0]!.action!.tier]).toEqual([5, 'fedUp'])
+  })
+  test('a pick is never one of the last few of its tier; a pool of one repeats', () => {
+    let p = idle
+    const seen: number[] = []
+    for (let k = 0; k < 12; k++) {
+      p = pressAction(theme, { ...p, tick: 10 + k * 100 }, 'poke', po)
+      // Heat cools fully between presses (100 ticks, decay 60): always calm.
+      const q = p.queue[0]!
+      expect(q.action!.tier).toBe('calm')
+      seen.push(q.variant!)
+      p = { ...p, queue: [] }
+    }
+    for (let k = 3; k < seen.length; k++) expect(seen.slice(k - 3, k)).not.toContain(seen[k])
+    expect(new Set(seen).size).toBeGreaterThan(3)
+    expect([pickFresh(1, 5, [0]), pickFresh(2, 5, [0]), pickFresh(2, 6, [0, 1]) <= 1]).toEqual([0, 1, true])
+  })
+  test('snapped: the reaction plays, the action rests and ignores presses, then wakes with no heat', () => {
+    let p: ReturnType<typeof sceneStart> = { ...idle, actions: { poke: { heat: 5, at: 10, restUntil: 0, recent: {} } } }
+    p = pressAction(theme, p, 'poke', po)
+    expect(p.queue[0]!.action!.tier).toBe('snapped')
+    expect(p.actions.poke).toMatchObject({ heat: 0, restUntil: 10 + 180 })
+    expect(actionButtons(theme, p)).toEqual([{ id: 'poke', label: '(RESTING)', resting: true }])
+    const resting = { ...p, tick: 100, queue: [] }
+    expect(pressAction(theme, resting, 'poke', po)).toBe(resting)
+    const awake = { ...p, tick: 190 }
+    expect(actionButtons(theme, awake)).toEqual([{ id: 'poke', label: 'POKE', resting: false }])
+    expect(pressAction(theme, awake, 'poke', po).queue[0]!.action!.tier).toBe('calm')
+  })
+  test('a rest loop replaces the scene while the action rests, after its snapped reaction', () => {
+    const resting: Theme = { ...theme, actions: [{ ...theme.actions![0]!, rest: { frames: [{ actors: [], caption: 'gone' }], loop: true } }] }
+    let p: ReturnType<typeof sceneStart> = { ...idle, actions: { poke: { heat: 5, at: 10, restUntil: 0, recent: {} } } }
+    p = stepScene(resting, { ...pressAction(resting, p, 'poke', po), tick: 11 }, o)
+    expect(p.playing?.action?.tier).toBe('snapped')
+    // The reaction first (it is what leaves), then the rest loop, then a moment behind it still only logs.
+    const at = (tick: number, event = p.playing) => currentFrame(resting, { ...base, tick, event, rest: restingAction(resting, { ...p, tick }) }).caption
+    expect([at(11), at(15)]).toEqual(['take 5', 'take 5'])
+    // The step ends the reaction after its five ticks; the rest loop is what shows then.
+    expect(stepScene(resting, { ...p, tick: 16 }, o).playing).toBe(null)
+    expect(at(16, null)).toBe('gone')
+    expect(at(100, { name: 'toolSuccess', startTick: 100, vars: {} })).toBe('gone')
+    expect(restingAction(resting, { ...p, tick: 10 + 180 })).toBe(null)
+    expect(at(10 + 180, null)).not.toBe('gone')
+    expect(restingAction(theme, { ...p, tick: 20 })).toBe(null)
+  })
+  test('what a rest takes away: actions that need it rest too, takes that need it are not picked, the rest play', () => {
+    const poke: ThemeAction = { ...theme.actions![0]!, gone: ['hero'], needs: ['hero'] }
+    const alsoHero: ThemeAction = { id: 'tickle', label: 'TICKLE', restLabel: '(NO ONE)', needs: ['hero'], reactions: poke.reactions }
+    // The cow's takes: two of six calm ones need the hero, the snapped one too.
+    const cow: ThemeAction = {
+      id: 'cow',
+      label: 'COW',
+      restLabel: '(COW GONE)',
+      gone: ['cow'],
+      needs: ['cow'],
+      reactions: {
+        calm: [take(2), { ...take(2), needs: ['hero'] }, take(2), { ...take(2), needs: ['hero'] }, take(2), take(2)],
+        irritated: [take(3)],
+        fedUp: [take(4)],
+        snapped: [{ ...take(5), needs: ['hero'] }],
+      },
+    }
+    const t: Theme = { ...theme, actions: [poke, alsoHero, cow] }
+    const heroGone = { ...idle, tick: 50, actions: { poke: { heat: 0, at: 10, restUntil: 5000, recent: {} } } }
+    expect(goneNow(t, heroGone)).toEqual(['hero'])
+    expect(actionButtons(t, heroGone)).toEqual([
+      { id: 'poke', label: '(RESTING)', resting: true },
+      { id: 'tickle', label: 'TICKLE', resting: true },
+      { id: 'cow', label: 'COW', resting: false },
+    ])
+    expect(pressAction(t, heroGone, 'tickle', po)).toBe(heroGone)
+    for (let k = 0; k < 12; k++) {
+      const q = pressAction(t, { ...heroGone, tick: 50 + k * 100 }, 'cow', po).queue[0]!
+      expect([q.action!.tier, [1, 3].includes(q.variant!)]).toEqual(['calm', false])
+    }
+    // Snapped with the hero away: the fed-up take plays instead, and the cow does not rest.
+    const hot = { ...heroGone, actions: { ...heroGone.actions, cow: { heat: 5, at: 50, restUntil: 0, recent: {} } } }
+    const s = pressAction(t, hot, 'cow', po)
+    expect([s.queue[0]!.action!.tier, s.actions.cow!.restUntil]).toEqual(['fedUp', 0])
+    expect(takeChoices(cow, 'snapped', [])).toEqual({ tier: 'snapped', indices: [0] })
+    expect(takeChoices(cow, 'calm', ['hero'])).toEqual({ tier: 'calm', indices: [0, 2, 4, 5] })
+    expect(pickFresh(6, 7, [0, 2], [0, 2, 4, 5]) >= 4).toBe(true)
+    // Both away: the union.
+    const bothGone = { ...heroGone, actions: { ...heroGone.actions, cow: { heat: 0, at: 40, restUntil: 200, recent: {} } } }
+    expect(goneNow(t, bothGone)).toEqual(['hero', 'cow'])
+    expect(actionButtons(t, bothGone).map(b => b.resting)).toEqual([true, true, true])
+    // The hero back: everything opens.
+    expect(actionButtons(t, { ...heroGone, tick: 5000 }).map(b => b.resting)).toEqual([false, false, false])
+  })
+  test('a tier without takes plays the tier below; an unknown action is ignored', () => {
+    const thin: Theme = { ...theme, actions: [{ ...theme.actions![0]!, reactions: { calm: [take(1)], irritated: [], fedUp: [], snapped: [take(9)] } }] }
+    expect(reactionsFor(thin.actions![0]!, 'fedUp')).toBe(thin.actions![0]!.reactions.calm)
+    expect(reactionsFor(thin.actions![0]!, 'snapped')).toBe(thin.actions![0]!.reactions.snapped)
+    expect(pressAction(theme, idle, 'nope', po)).toBe(idle)
+    expect(resolveTheme('zelda').missing).toEqual([])
+  })
+  test('the action row takes one row of the Quest tab, only for a theme with actions', () => {
+    expect(actionRows(theme)).toBe(1)
+    expect(actionRows(zelda)).toBe(0)
+    expect(sceneMinRows(theme, 1)).toBe(sceneMinRows(zelda, 1) + 1)
+    const room = { rows: 60, tabRows: 1, meterRows: 6, barWanted: 1 }
+    const a = questLayout(theme, room)
+    const b = questLayout(zelda, room)
+    expect(a.scene + a.log).toBe(b.scene + b.log - 1)
+  })
+  test('every reaction of every pack is listed with the state that plays it', () => {
+    const listed = animationsOf(theme).filter(x => x.key.startsWith('actions.'))
+    expect(listed.map(x => x.key)).toEqual([
+      'actions.poke.calm', 'actions.poke.calm#1', 'actions.poke.calm#2', 'actions.poke.calm#3', 'actions.poke.calm#4', 'actions.poke.calm#5',
+      'actions.poke.irritated', 'actions.poke.irritated#1', 'actions.poke.fedUp', 'actions.poke.snapped',
+    ])
+    expect(listed[7]!.state.event).toMatchObject({ action: { id: 'poke', tier: 'irritated' }, variant: 1 })
   })
 })
 
@@ -583,6 +814,15 @@ describe('scene placement', () => {
   })
 })
 
+describe('gone', () => {
+  test('an actor or line marked gone is not drawn while its name is away', () => {
+    const t = probeTheme([{ sprite: 'dot', x: 60, y: 0, gone: 'cow' }], [], { texts: [{ text: 'MOO', x: 70, y: 0, color: '#ffffff', gone: 'cow' }] })
+    expect(sceneClips(t, base, 48).map(c => c.what)).toEqual(['dot', 'text "MOO"'])
+    expect(sceneClips(t, { ...base, gone: ['cow'] }, 48)).toEqual([])
+    expect(sceneClips(t, { ...base, gone: ['crew'] }, 48).length).toBe(2)
+  })
+})
+
 describe('status bar', () => {
   const zelda = resolveTheme('zelda').theme
   const b: BarState = { tick: 0, percent: 40, spend: 260, hero: 'tier3', weapon: 'high' }
@@ -635,7 +875,7 @@ describe('status bar', () => {
 })
 
 describe('quest tab rows', () => {
-  const zelda = resolveTheme('zelda').theme
+  const zelda: Theme = { ...resolveTheme('zelda').theme, actions: undefined }
   const design = sceneDesignRows(zelda)
   const max = sceneMaxRows(zelda)
   const room = (rows: number, barWanted = 1) => questLayout(zelda, { rows, tabRows: 2, meterRows: 11, barWanted })

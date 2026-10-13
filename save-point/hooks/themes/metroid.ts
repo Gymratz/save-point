@@ -13,7 +13,7 @@
 
 import { at, hero, loop, once, weapon } from './kit'
 import { quarter } from './pixel'
-import type { Actor, HeroTier, Sprite, Theme } from './types'
+import type { Actor, Animation, Frame, HeroTier, SceneText, Sprite, Theme, ThemeAction } from './types'
 
 const pixels = {
   // The suit (Power Suit colors; tiers swap these)
@@ -655,6 +655,9 @@ const sprites: Theme['sprites'] = {
   missile: S(['.T.', 'TGT', 'GGG', 'GgG', 'GgG', 'x.x']),
   helmet: S(['.KKK.', 'KAAAK', 'AAVVK', 'AVvVK', 'aaVVK', '.aaa.']),
   miniBeam: S(['.ppp.', 'pPPPp', 'pPPPp', '.ppp.']),
+
+  // You: a gloved hand with a red cuff, from the top of the scene (the beam it holds is the weapon).
+  hand: S(['.RRRRRR.', 'RRRRRRRR', 'GTTTTTTG', 'GTGTGTTG', 'GTTTTTTG', 'GTTTTTTG', '.GTTTTG.', '..GGGG..']),
 }
 
 // ---------------------------------------------------------------------------
@@ -886,6 +889,641 @@ const events: Theme['events'] = {
   ),
 }
 
+// ---------------------------------------------------------------------------
+// Actions: the buttons under the scene. You are a gloved hand from the top of
+// the scene holding the beam of the current effort like a stick, tip down: a
+// glowing poker. Each press plays one of the tier's takes, picked at random;
+// the target's patience wears down with repeated presses (see `pressAction`).
+// ---------------------------------------------------------------------------
+
+/** The hand (8 by 8) with the beam held in the fist, tip down: the beam's tip is 9 to 12 pixels under the hand's top. */
+const you = (x: number, y: number, opts: Partial<Actor> = {}): Actor[] => [weapon(x + 2, y + 5, { turn: 'cw', ...opts }), at('hand', x, y, opts)]
+/** The empty hand. */
+const fist = (x: number, y: number, opts: Partial<Actor> = {}): Actor => at('hand', x, y, opts)
+/** A take that is only picked while these are present. */
+const needing = (needs: string[], anim: Animation): Animation => ({ ...anim, needs })
+/** A reaction: one-shot, every frame held twice as long as written (a line stays about a second at 6 fps). */
+const take = (...frames: Frame[]): Animation => once(...frames.map(f => ({ ...f, hold: 2 * Math.max(1, f.hold ?? 1) })))
+/** The same caption on every frame from `from` on. */
+const captioned = (caption: string, frames: Frame[], from = 2): Frame[] => frames.map((f, k) => (k >= from ? { ...f, caption } : f))
+// Who is who, for the rests: the hunter and everything she does is `hunter`, the baby metroid `baby`, the crawler `crawler`.
+const hunter = (pose: string, x = 0, y = 0, swap?: Record<string, string>): Actor => ({ ...hero(pose, x, y, swap), gone: 'hunter' })
+const hers = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'hunter' }))
+/** The hunter as a morph ball `x` columns along, turned a quarter on odd steps. */
+const hball = (x: number, turned = false): Actor => hunter(turned ? 'roll' : 'sleep', x)
+/** The baby metroid at scene pixel (x, y), in the cavern (it does not rise with a taller suit). */
+const BABY_AT = { x: 38, y: 18 }
+const theBaby = (x = BABY_AT.x, y = BABY_AT.y, flap = false, opts: Partial<Actor> = {}): Actor =>
+  at(flap ? 'baby2' : 'baby1', x - ANCHOR.x, y - ANCHOR.y, { fixed: true, gone: 'baby', ...opts })
+/** The crawler at scene pixel (x, y), legs on the other step. */
+const crawler = (x = CRAWLER.x, y = CRAWLER.y, step = false, opts: Partial<Actor> = {}): Actor =>
+  at(step ? 'crawler2' : 'crawler1', x - ANCHOR.x, y - ANCHOR.y, { fixed: true, gone: 'crawler', ...opts })
+/** The crawler on its side, climbing. */
+const climbing = (x: number, y: number): Actor => at('crawler1', x - ANCHOR.x, y - ANCHOR.y, { fixed: true, gone: 'crawler', turn: 'ccw' })
+/** The hunter's line beside her head, over it: it rises with the taller suits. `x` 14 puts it at column 29, right of the hand. */
+const her = (text: string, x = 14, color = ink): SceneText => ({ text, x, y: -2, color, lift: true, gone: 'hunter' })
+/** The metroid's line, under it. */
+const chirp = (text: string, color = ink): SceneText => ({ ...say(text, 37, 12, color), gone: 'baby' })
+/** The crawler's line, over it (clear of the hand while it hovers; not on a poke frame, where the beam's tip is there). */
+const skree = (text: string, color = ink): SceneText => ({ ...say(text, 37, 13, color), gone: 'crawler' })
+/** The spark of a poke, as a prop over the hunter (it rises with her suit). */
+const zap = (x: number, y: number): Actor => at('sparkle', x, y)
+/** The singed hand, the drained hand, the pricked hand. */
+const SINGED = { T: 'n', G: 'K' }
+const DRAINED = { T: 'G', G: 'n' }
+const PRICKED = { T: 'hurtB' }
+/** The save station with the hunter sitting against it, helmet off (as `resting`, tagged hers). */
+const sitting = (station: string, swap?: Record<string, string>): Actor[] => [put(station, SAVE.x, SAVE.y), hunter('lie', 4, 0, swap), { ...put('helmetOff', 37, 28), tier: true, gone: 'hunter', ...(swap ? { swap } : {}) }]
+
+// 1. Poke the hunter. The hand comes down on the helmet from the top of the
+// scene and rises with the taller suits, as a prop over her head does: the
+// Gravity build leaves it 12 pixels of headroom, so the cuff crosses the top
+// edge while it hovers (offstage, on purpose).
+const AX = 4
+const A_ENTER = -22
+const A_HOVER = -15
+const A_POKE = -12
+/** The hunter and the hand at `y` (null: gone). The hand's beam comes first among the weapons, so a shot of hers never takes its place. */
+const hunterScene = (y: number | null, hunterActors: Actor[], more: Actor[] = []): Actor[] => [
+  ...(y === null ? [] : you(AX, y, { offstage: true })),
+  ...hunterActors,
+  ...more,
+]
+const hStart = (hunterActors: Actor[] = [hunter('stand')]): Frame[] => [
+  { actors: hunterScene(A_ENTER, hunterActors), hold: 1 },
+  { actors: hunterScene(A_HOVER, hunterActors), hold: 1 },
+  { actors: hunterScene(A_POKE, hunterActors, [zap(5, -4)]), hold: 1 },
+]
+/** A charge at the arm cannon as she faces front: the beam's own glow in the cavern. */
+const frontCharge = (n: 1 | 2): Actor => weapon(13, 8, { pose: `charge${n}`, fixed: true, gone: 'hunter' })
+const pokeHunter: ThemeAction = {
+  id: 'hunter',
+  label: 'POKE HUNTER',
+  restLabel: '(HUNTER OUT)',
+  gone: ['hunter'],
+  needs: ['hunter'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Scanned you. Threat level: negligible.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(scan('up'))]), hold: 2 },
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(scan('level'))]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), texts: [her('SCANNING.')], hold: 2 },
+          { actors: hunterScene(null, [hunter('stand')]), texts: [her('THREAT: NEGLIGIBLE.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked the hunter. The hunter said no.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), texts: [her('...')], hold: 2 },
+          { actors: hunterScene(A_POKE, [hunter('stand')], [zap(6, -4)]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), texts: [her('NO.')], hold: 3 },
+          { actors: hunterScene(null, [hunter('stand')]), texts: [her('NO.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter does not blink. She cannot. Helmet.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), hold: 1 },
+          { actors: hunterScene(A_POKE, [hunter('stand')], [zap(6, -4)]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), texts: [her('...')], hold: 2 },
+          { actors: hunterScene(null, [hunter('stand')]), texts: [her('HELMET.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter would like some personal space.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(sweat)]), hold: 2 },
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(sweat)]), texts: [her('BACK OFF.', 20)], hold: 3 },
+          { actors: hunterScene(null, [hunter('stand'), ...hers(sweat)]), texts: [her('BACK OFF.', 20)], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter recognizes her beam. Awkward.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), texts: [her('IS THAT MY BEAM?')], hold: 3 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), texts: [her('...')], hold: 1 },
+          { actors: hunterScene(null, [hunter('stand')]), texts: [her('GIVE IT BACK.')], hold: 3 },
+        ]),
+      ),
+      // At the save station: the hand is scenery here (her sitting height is the same in every suit).
+      take(
+        ...captioned('Poked the hunter at the save station. No.', [
+          { actors: [...sitting('saveOn1'), ...you(10, -22, { fixed: true, offstage: true })], texts: [{ ...say('z', 33, 9, ink), gone: 'hunter' }], hold: 1 },
+          { actors: [...sitting('saveOn2'), ...you(10, -16, { fixed: true })], texts: [{ ...say('z', 33, 9, ink), gone: 'hunter' }], hold: 1 },
+          { actors: [...sitting('saveOn1'), ...you(10, -12, { fixed: true }), put('sparkle', 26, 16)], hold: 1 },
+          { actors: [...sitting('saveOn2'), ...you(10, -16, { fixed: true })], texts: [{ ...say('NOT NOW.', 34, 9, ink), gone: 'hunter' }], hold: 3 },
+          { actors: sitting('saveOn1'), texts: [{ ...say('z', 33, 9, ink), gone: 'hunter' }], hold: 2 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The hunter is charging a shot. Just saying.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(charge(1))]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(charge(2))]), texts: [her("DON'T.")], hold: 3 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), texts: [her("DON'T.")], hold: 1 },
+          { actors: hunterScene(null, [hunter('stand')]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Warning shot. The hand took the hint.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('attack'), ...hers(fired())]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('attack'), ...hers([shot(TARGET)])]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), texts: [her("NEXT ONE'S YOURS.")], hold: 3 },
+          { actors: hunterScene(A_ENTER, [hunter('stand')]), texts: [her("NEXT ONE'S YOURS.")], hold: 1 },
+          { actors: hunterScene(null, [hunter('stand')]), hold: 1 },
+        ]),
+      ),
+      // She takes the beam back: the fist stays, empty, and the beam is over her head.
+      take(
+        ...captioned('Beam confiscated. It was hers anyway.', [
+          ...hStart(),
+          { actors: [weapon(5, -7, { gone: 'hunter' }), fist(AX, A_HOVER, { offstage: true }), hunter('itemGet')], texts: [her('MINE.')], hold: 2 },
+          { actors: [weapon(5, -7, { gone: 'hunter' }), fist(AX, A_ENTER, { offstage: true }), hunter('itemGet')], texts: [her('MINE.')], hold: 2 },
+          { actors: [weapon(5, -7, { gone: 'hunter' }), hunter('itemGet')], texts: [her('THANK YOU.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Alert level raised. Because of you.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand', 0, 0, ALARMED)], alarms(true)), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')], alarms(false)), texts: [her('ALERT.')], hold: 2 },
+          { actors: hunterScene(A_HOVER, [hunter('stand', 0, 0, ALARMED)], alarms(true)), texts: [her('ALERT.')], hold: 1 },
+          { actors: hunterScene(null, [hunter('stand')], alarms(false)), texts: [her('ALERT.')], hold: 2 },
+          { actors: hunterScene(null, [hunter('stand')]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Dodged. The hand poked a cavern.', [
+          { actors: hunterScene(A_ENTER, [hunter('stand')]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), hold: 1 },
+          { actors: hunterScene(A_POKE, [hball(4, true)]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hball(8)]), texts: [{ ...say('TOO SLOW.', 25, 13, ink), gone: 'hunter' }], hold: 2 },
+          { actors: hunterScene(null, [hunter('stand', 8)]), texts: [{ ...say('TOO SLOW.', 25, 13, ink), gone: 'hunter' }], hold: 2 },
+          { actors: hunterScene(null, [hunter('walk', 4)]), hold: 1 },
+          { actors: hunterScene(null, [hunter('stand')]), hold: 1 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('Charged shot. The hand is a cautionary tale.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('itemGet'), frontCharge(1)]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('itemGet'), frontCharge(2)]), hold: 2 },
+          { actors: hunterScene(A_HOVER, [hunter('itemGet')], [at('boom2', AX, A_HOVER, { offstage: true })]), hold: 1 },
+          { actors: [...you(AX, A_ENTER, { offstage: true, swap: SINGED }), hunter('itemGet'), at('boom3', AX, A_HOVER, { offstage: true })], hold: 1 },
+          { actors: hunterScene(null, [hunter('stand')]), texts: [her('...')], hold: 2 },
+          { actors: hunterScene(null, [hunter('stand')]), texts: [her('NEXT?')], hold: 2 },
+        ]),
+      ),
+      needing(['baby'], take(
+        ...captioned('Metroid deployed. It likes your hand.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand')], [theBaby(41, 12)]), texts: [her('GET IT.')], hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')], [theBaby(36, 10, true)]), texts: [her('GET IT.')], hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand')], [at('baby1', AX + 1, A_HOVER + 8, { gone: 'baby' })]), texts: [{ text: 'SKREE', x: 12, y: -10, color: ink, lift: true, gone: 'baby' }], hold: 2 },
+          { actors: hunterScene(A_ENTER, [hunter('stand')], [at('baby2', AX + 1, A_ENTER + 8, { gone: 'baby', offstage: true })]), hold: 1 },
+          { actors: hunterScene(null, [hunter('stand')], [theBaby(BABY_AT.x, BABY_AT.y, true)]), texts: [her('GOOD.')], hold: 3 },
+        ]),
+      )),
+      take(
+        ...captioned('Logged in the Chozo records: pest.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(scan('level')), pillar(0)]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(scan('level')), pillar(1)]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(scan('level')), pillar(2)]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand'), ...hers(scan('level')), pillar(3)]), hold: 1 },
+          { actors: hunterScene(A_HOVER, [hunter('stand'), pillar(3)]), texts: [say('PEST.', 40, 5, warn)], hold: 3 },
+          { actors: hunterScene(null, [hunter('stand'), pillar(3)]), texts: [say('PEST.', 40, 5, warn)], hold: 2 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The hunter saved and quit. Back in a bit.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand')]), texts: [her('SAVING.')], hold: 2 },
+          { actors: hunterScene(null, [put('saveOn1', SAVE.x, SAVE.y), hunter('walk', 2)]), hold: 1 },
+          { actors: sitting('saveOn2'), texts: [{ ...say('SAVING...', 33, 8, ink), gone: 'hunter' }], hold: 2 },
+          { actors: sitting('saveOn1', WHITE), hold: 1 },
+          { actors: [put('saveOn2', SAVE.x, SAVE.y)], hold: 1 },
+          { actors: [put('saveOn1', SAVE.x, SAVE.y)], texts: [say('...', 26, 12, ink)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter left through the hatch. Locked.', [
+          ...hStart(),
+          { actors: hunterScene(A_HOVER, [hunter('stand'), door('')]), texts: [her('DONE.')], hold: 2 },
+          { actors: hunterScene(null, [hunter('walk', 4), door('Flash')]), hold: 1 },
+          { actors: hunterScene(null, [hunter('walk', 8), door('Open')]), hold: 1 },
+          { actors: hunterScene(null, [{ ...hunter('walk', 16), offstage: true }, door('Open')]), hold: 1 },
+          { actors: hunterScene(null, [{ ...hunter('walk', 24), offstage: true }, door('Open')]), hold: 1 },
+          { actors: [door('Open')], hold: 1 },
+          { actors: [door('Flash')], hold: 1 },
+          { actors: [door('')], texts: [say('...', 33, 9, ink)], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The hunter's rest: the station blinks for no one; a crawler takes the floor and a metroid the air.
+  rest: loop(
+    { actors: [put('saveOn1', SAVE.x, SAVE.y), crawler(40, CRAWLER.y), theBaby(38, 12)], hold: 6 },
+    { actors: [put('saveOn2', SAVE.x, SAVE.y), crawler(36, CRAWLER.y, true), theBaby(40, 10, true)], hold: 6 },
+    { actors: [put('saveOn1', SAVE.x, SAVE.y), crawler(30, CRAWLER.y), theBaby(41, 12)], hold: 6 },
+    { actors: [put('saveOn2', SAVE.x, SAVE.y), crawler(30, CRAWLER.y, true, { flip: true }), theBaby(38, 16, true)], texts: [{ ...say('?', 33, 13, ink), gone: 'crawler' }], hold: 6 },
+    { actors: [put('saveOn1', SAVE.x, SAVE.y), crawler(36, CRAWLER.y, false, { flip: true }), theBaby(36, 12)], hold: 6 },
+    { actors: [put('saveOn2', SAVE.x, SAVE.y), crawler(40, CRAWLER.y, true, { flip: true }), theBaby(38, 12, true)], texts: [say('...', 26, 12, ink)], hold: 6 },
+  ),
+}
+
+// 2. Poke the metroid. It hovers at the right, level with her head; the hand
+// is scenery here (it does not rise with the suit).
+const BX = 22
+const B_ENTER = -26
+const B_HOVER = -19
+const B_POKE = -15
+/** The hunter watching, the metroid (or what is in its place), the hand at `y` (null: gone), and more over the hand. */
+const babyScene = (y: number | null, babies: Actor[] = [theBaby()], more: Actor[] = [], hunterActors: Actor[] = [hunter('stand')]): Actor[] => [
+  ...hunterActors,
+  ...babies,
+  ...(y === null ? [] : you(BX, y, { fixed: true, ...(y <= B_ENTER + 4 ? { offstage: true } : {}) })),
+  ...more,
+]
+const bStart = (babies: Actor[] = [theBaby()]): Frame[] => [
+  { actors: babyScene(B_ENTER, babies), hold: 1 },
+  { actors: babyScene(B_HOVER, babies), hold: 1 },
+  { actors: babyScene(B_POKE, babies, [put('sparkle', 38, 14)]), hold: 1 },
+]
+/** The metroid gone up with the hand, or on the fist: placed over the hand. */
+const onFist = (y: number, flap = false, opts: Partial<Actor> = {}): Actor => theBaby(38, y, flap, opts)
+const pokeMetroid: ThemeAction = {
+  id: 'baby',
+  label: 'POKE METROID',
+  restLabel: '(BABY GONE)',
+  gone: ['baby'],
+  needs: ['baby'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked the metroid. It chirped. Adorable.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER), texts: [chirp('SKREE.')], hold: 3 },
+          { actors: babyScene(B_HOVER, [theBaby(BABY_AT.x, BABY_AT.y, true)]), texts: [chirp('SKREE.')], hold: 1 },
+          { actors: babyScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked. The metroid floated off. Came back.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER, [theBaby(40, 20, true)]), hold: 1 },
+          { actors: babyScene(B_HOVER, [theBaby(41, 23)]), hold: 2 },
+          { actors: babyScene(B_HOVER, [theBaby(40, 20, true)]), hold: 1 },
+          { actors: babyScene(null), texts: [chirp('HI.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The metroid tasted your beam. Low calorie.', [
+          ...bStart(),
+          { actors: babyScene(B_POKE, [theBaby(38, 15)]), texts: [chirp('nom')], hold: 2 },
+          { actors: babyScene(B_POKE, [theBaby(38, 15, true)]), texts: [chirp('nom')], hold: 2 },
+          { actors: babyScene(B_HOVER), texts: [chirp('MEH.')], hold: 2 },
+          { actors: babyScene(null), texts: [chirp('MEH.')], hold: 1 },
+        ]),
+      ),
+      needing(['hunter'], take(
+        ...captioned('The hunter would like her metroid back.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER), texts: [her('MINE.')], hold: 3 },
+          { actors: babyScene(B_HOVER, [theBaby(BABY_AT.x, BABY_AT.y, true)]), texts: [her('MINE.'), chirp('SKREE?')], hold: 2 },
+          { actors: babyScene(null), texts: [her('MINE.')], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('The metroid is confused. It is a baby.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER), texts: [chirp('?')], hold: 2 },
+          { actors: babyScene(B_POKE, undefined, [put('sparkle', 38, 14)]), texts: [chirp('?')], hold: 1 },
+          { actors: babyScene(B_HOVER, [theBaby(BABY_AT.x, BABY_AT.y, true)]), texts: [chirp('??')], hold: 2 },
+          { actors: babyScene(null), texts: [chirp('!')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The metroid thinks this is a game. It is.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER, [theBaby(38, 20)]), hold: 1 },
+          { actors: babyScene(B_ENTER + 4, [theBaby(38, 16, true)]), hold: 1 },
+          { actors: babyScene(B_HOVER, [theBaby(38, 20)]), hold: 1 },
+          { actors: babyScene(B_ENTER + 4, [theBaby(38, 16, true)]), hold: 1 },
+          { actors: babyScene(null), texts: [chirp('AGAIN.')], hold: 3 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The metroid latched on. Energy: yours.', [
+          ...bStart(),
+          { actors: babyScene(B_POKE, [], [onFist(6, true)]), texts: [chirp('SKREE!')], hold: 1 },
+          { actors: [hunter('stand'), ...you(BX, B_POKE, { fixed: true, swap: DRAINED }), onFist(6)], texts: [chirp('...')], hold: 2 },
+          { actors: [hunter('stand'), ...you(BX, B_ENTER, { fixed: true, offstage: true, swap: DRAINED }), onFist(-5, true, { offstage: true })], hold: 1 },
+          { actors: babyScene(null, [theBaby(38, 10, true)]), hold: 1 },
+          { actors: babyScene(null), texts: [chirp('BURP.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The metroid screeched. The hand backed off.', [
+          ...bStart(),
+          { actors: babyScene(B_POKE, [theBaby(BABY_AT.x, BABY_AT.y, true)]), texts: [chirp('SKREEEE!')], hold: 1 },
+          { actors: babyScene(B_HOVER, [theBaby(BABY_AT.x, BABY_AT.y, true)]), texts: [chirp('SKREEEE!')], hold: 1 },
+          { actors: babyScene(B_ENTER, [theBaby(BABY_AT.x, BABY_AT.y, true)]), texts: [chirp('SKREEEE!')], hold: 2 },
+          { actors: babyScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Two metroids now. That is on you.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER, [theBaby(), theBaby(46, 24, false, { offstage: true })]), hold: 1 },
+          { actors: babyScene(B_HOVER, [theBaby(), theBaby(41, 25, true)]), hold: 2 },
+          { actors: babyScene(B_HOVER, [theBaby(BABY_AT.x, BABY_AT.y, true), theBaby(40, 26)]), texts: [chirp('SKREE.')], hold: 2 },
+          { actors: babyScene(null, [theBaby(), theBaby(40, 26, true)]), hold: 2 },
+        ]),
+      ),
+      needing(['hunter'], take(
+        ...captioned('The hunter said leave it. Leave it.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER), texts: [her('DROP IT.')], hold: 2 },
+          { actors: babyScene(B_HOVER, undefined, [], [hunter('attack'), ...hers(fired())]), hold: 1 },
+          { actors: babyScene(B_HOVER, undefined, [], [hunter('attack'), ...hers([shot(TARGET)])]), hold: 1 },
+          { actors: babyScene(null), texts: [her('DROP IT.'), chirp('OK.')], hold: 2 },
+        ]),
+      )),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The metroid ate your beam. Burp.', [
+          ...bStart(),
+          { actors: babyScene(B_POKE, [theBaby(38, 15)]), texts: [chirp('nom')], hold: 1 },
+          { actors: babyScene(B_POKE, [theBaby(38, 14, true)]), texts: [chirp('NOM.')], hold: 1 },
+          { actors: [hunter('stand'), theBaby(38, 14, true), fist(BX, B_POKE, { fixed: true })], texts: [chirp('GULP.')], hold: 2 },
+          { actors: [hunter('stand'), theBaby(), fist(BX, B_ENTER, { fixed: true, offstage: true })], hold: 1 },
+          { actors: [hunter('stand'), theBaby()], texts: [chirp('BURP.')], hold: 3 },
+        ]),
+      ),
+      needing(['hunter'], take(
+        ...captioned('The metroid latched onto the hunter. Thanks.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER, [theBaby(34, 17, true)]), hold: 1 },
+          { actors: babyScene(B_HOVER, [at('baby1', 3, -6, { gone: 'baby' })], [], [hunter('stand', 0, 0, HURT_A)]), hold: 1 },
+          { actors: babyScene(B_HOVER, [at('baby2', 3, -6, { gone: 'baby' })], [], [hunter('stand', 0, 0, HURT_B)]), texts: [her('...')], hold: 2 },
+          { actors: babyScene(null, [at('baby1', 3, -6, { gone: 'baby' })], [], [hunter('stand', 0, 0, HURT_A)]), texts: [her('THANKS.')], hold: 2 },
+          { actors: babyScene(null, [theBaby(36, 16, true)]), hold: 1 },
+          { actors: babyScene(null), hold: 1 },
+        ]),
+      )),
+      take(
+        ...captioned('Metroid swarm. The hand has left the chat.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER, [theBaby(), theBaby(41, 26), theBaby(46, 10, false, { offstage: true })]), hold: 1 },
+          { actors: babyScene(B_HOVER, [theBaby(38, 16, true), theBaby(40, 22)], [onFist(9, true)]), hold: 2 },
+          { actors: babyScene(B_ENTER, [theBaby(38, 12, true), theBaby(41, 8)], [onFist(2, true, { offstage: true })]), hold: 1 },
+          { actors: babyScene(null, [theBaby(), theBaby(41, 26, true), theBaby(40, 8)]), texts: [chirp('SKREE.')], hold: 2 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The metroid left. It had a swarm to catch.', [
+          ...bStart(),
+          { actors: babyScene(B_HOVER, [theBaby(BABY_AT.x, BABY_AT.y, true)]), texts: [chirp('SKREE.')], hold: 2 },
+          { actors: babyScene(B_HOVER, [theBaby(40, 12, true)]), hold: 1 },
+          { actors: babyScene(B_ENTER, [theBaby(41, 3)]), hold: 1 },
+          { actors: babyScene(null, [theBaby(41, -4, true, { offstage: true })]), hold: 1 },
+          { actors: babyScene(null, []), texts: [say('...', 38, 10, ink)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The metroid went with the hand. Yours now.', [
+          ...bStart(),
+          { actors: babyScene(B_POKE, [], [onFist(6, true)]), texts: [chirp('SKREE!')], hold: 2 },
+          { actors: babyScene(B_ENTER + 4, [], [onFist(2, false, { offstage: true })]), hold: 1 },
+          { actors: babyScene(B_ENTER, [], [onFist(-4, true, { offstage: true })]), hold: 1 },
+          { actors: babyScene(null, []), texts: [say('...', 38, 10, ink)], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The metroid's rest: the hunter looks for it.
+  rest: loop(
+    { actors: [hunter('stand'), ...hers(scan('up'))], hold: 6 },
+    { actors: [hunter('stand'), ...hers(scan('level'))], hold: 6 },
+    { actors: [hunter('itemGet')], texts: [her('WHERE IS IT?')], hold: 6 },
+    { actors: [hunter('itemGet')], hold: 6 },
+  ),
+}
+
+// 3. Poke the crawler. It keeps the floor at the right; the hand is scenery.
+const CX = 22
+const C_ENTER = -26
+const C_DROP = -18
+const C_HOVER = -8
+const C_POKE = -3
+/** The first actors (the hunter, or the crawler behind her), the crawlers, the hand at `y` (null: gone), and more over the hand. */
+const crawlerScene = (y: number | null, crawlers: Actor[] = [crawler()], more: Actor[] = [], first: Actor[] = [hunter('stand')]): Actor[] => [
+  ...first,
+  ...crawlers,
+  ...(y === null ? [] : you(CX, y, { fixed: true, ...(y <= C_ENTER ? { offstage: true } : {}) })),
+  ...more,
+]
+const cStart = (crawlers: Actor[] = [crawler()], first?: Actor[]): Frame[] => [
+  { actors: crawlerScene(C_ENTER, crawlers, [], first), hold: 1 },
+  { actors: crawlerScene(C_DROP, crawlers, [], first), hold: 1 },
+  { actors: crawlerScene(C_HOVER, crawlers, [], first), hold: 1 },
+  { actors: crawlerScene(C_POKE, crawlers, [put('sparkle', 39, 25)], first), hold: 1 },
+]
+const pokeCrawler: ThemeAction = {
+  id: 'crawler',
+  label: 'POKE CRAWLER',
+  restLabel: '(NO CRAWLER)',
+  gone: ['crawler'],
+  needs: ['crawler'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked the crawler. It crawled. As advertised.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER, [crawler(36, CRAWLER.y, true)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, [crawler(34, CRAWLER.y)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, [crawler(32, CRAWLER.y, true)]), texts: [skree('...')], hold: 2 },
+          { actors: crawlerScene(null, [crawler(34, CRAWLER.y)]), hold: 1 },
+          { actors: crawlerScene(null, [crawler(36, CRAWLER.y, true)]), hold: 1 },
+          { actors: crawlerScene(null), hold: 1 },
+        ], 3),
+      ),
+      take(
+        ...captioned('Poked. The crawler has spikes. Noted.', [
+          ...cStart(),
+          { actors: crawlerScene(C_POKE, [crawler(CRAWLER.x, CRAWLER.y, true)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, [crawler(CRAWLER.x, CRAWLER.y, true)]), texts: [skree('!')], hold: 2 },
+          { actors: crawlerScene(C_DROP, [crawler(CRAWLER.x, CRAWLER.y, true)]), texts: [skree('!')], hold: 1 },
+          { actors: crawlerScene(null), hold: 2 },
+        ], 3),
+      ),
+      take(
+        ...captioned('Poked. The crawler is playing dead. Badly.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER, [crawler(CRAWLER.x, CRAWLER.y, false, { flipY: true })]), hold: 2 },
+          { actors: crawlerScene(C_HOVER, [crawler(CRAWLER.x, CRAWLER.y, false, { flipY: true })]), texts: [skree('x_x')], hold: 2 },
+          { actors: crawlerScene(null, [crawler(CRAWLER.x, CRAWLER.y, false, { flipY: true })]), texts: [skree('x_x')], hold: 1 },
+          { actors: crawlerScene(null), texts: [skree('...')], hold: 2 },
+        ], 3),
+      ),
+      take(
+        ...captioned('The crawler said skree. Twice.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER), texts: [skree('skree')], hold: 2 },
+          { actors: crawlerScene(C_HOVER, [crawler(CRAWLER.x, CRAWLER.y, true)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER), texts: [skree('skree')], hold: 2 },
+          { actors: crawlerScene(null), hold: 1 },
+        ], 3),
+      ),
+      needing(['hunter'], take(
+        ...captioned('The hunter mentions that it bites. Too late.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER), texts: [her('BITES.')], hold: 2 },
+          { actors: crawlerScene(C_POKE, [crawler(CRAWLER.x, CRAWLER.y, true)], [put('sparkle', 39, 25)]), hold: 1 },
+          { actors: [hunter('stand'), crawler(CRAWLER.x, CRAWLER.y, true), ...you(CX, C_DROP, { fixed: true, swap: PRICKED })], texts: [her('TOLD YOU')], hold: 2 },
+          { actors: crawlerScene(null), texts: [her('TOLD YOU')], hold: 2 },
+        ], 3),
+      )),
+      take(
+        ...captioned('The crawler climbed the hatch. And back down.', [
+          ...cStart(undefined, [hunter('stand'), door('')]),
+          { actors: crawlerScene(C_HOVER, [crawler(39, CRAWLER.y, true)], [], [hunter('stand'), door('')]), hold: 1 },
+          { actors: crawlerScene(C_DROP, [climbing(40, 22)], [], [hunter('stand'), door('')]), hold: 1 },
+          { actors: crawlerScene(C_ENTER, [climbing(40, 15)], [], [hunter('stand'), door('')]), hold: 1 },
+          { actors: crawlerScene(null, [climbing(40, 10)], [], [hunter('stand'), door('')]), texts: [skree('...')], hold: 2 },
+          { actors: crawlerScene(null, [climbing(40, 18)], [], [hunter('stand'), door('')]), hold: 1 },
+          { actors: crawlerScene(null, [crawler()], [], [hunter('stand'), door('')]), texts: [skree('...')], hold: 2 },
+        ], 3),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The crawler bit the beam. Beam tastes bad.', [
+          ...cStart(),
+          { actors: crawlerScene(C_POKE, [crawler(CRAWLER.x, CRAWLER.y, true)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, [crawler(38, 24)]), hold: 1 },
+          { actors: crawlerScene(C_DROP, [crawler(CRAWLER.x, CRAWLER.y, true)]), texts: [skree('PTOO.')], hold: 2 },
+          { actors: crawlerScene(null), texts: [skree('BLEH.')], hold: 2 },
+        ], 3),
+      ),
+      take(
+        ...captioned('Pricked. The crawler is a cactus with legs.', [
+          ...cStart(),
+          { actors: [hunter('stand'), crawler(CRAWLER.x, CRAWLER.y, true), ...you(CX, C_POKE, { fixed: true, swap: PRICKED }), put('sparkle', 39, 25)], hold: 1 },
+          { actors: [hunter('stand'), crawler(CRAWLER.x, CRAWLER.y, true), ...you(CX, C_DROP, { fixed: true, swap: PRICKED })], hold: 1 },
+          { actors: [hunter('stand'), crawler(), ...you(CX, C_ENTER, { fixed: true, offstage: true, swap: PRICKED })], texts: [say('OW.', 37, 8, ink)], hold: 2 },
+          { actors: crawlerScene(null), texts: [skree('HEH.')], hold: 2 },
+        ], 3),
+      ),
+      needing(['hunter'], take(
+        ...captioned('The crawler is hiding behind the hunter. Hmph.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER, [crawler(30, CRAWLER.y, true, { flip: true })]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, [], [], [crawler(20, CRAWLER.y, false, { flip: true }), hunter('stand')]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, [], [], [crawler(8, CRAWLER.y, true, { flip: true }), hunter('stand')]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, [], [], [crawler(5, CRAWLER.y, false, { flip: true }), hunter('stand')]), texts: [her('...')], hold: 2 },
+          { actors: crawlerScene(null, [], [], [crawler(5, CRAWLER.y, false, { flip: true }), hunter('stand')]), texts: [her('...')], hold: 2 },
+        ], 3),
+      )),
+      take(
+        ...captioned('Your beam is being headbutted. Tak. Tak.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER, [crawler(36, CRAWLER.y, true)]), hold: 1 },
+          { actors: [hunter('stand'), crawler(37, CRAWLER.y), ...you(CX + 1, C_HOVER, { fixed: true })], texts: [say('TAK', 45, 11, ink)], hold: 1 },
+          { actors: crawlerScene(C_HOVER, [crawler(36, CRAWLER.y, true)]), hold: 1 },
+          { actors: [hunter('stand'), crawler(37, CRAWLER.y), ...you(CX - 1, C_HOVER, { fixed: true })], texts: [say('TAK', 45, 11, ink)], hold: 1 },
+          { actors: crawlerScene(C_DROP, [crawler(36, CRAWLER.y, true)]), hold: 1 },
+          { actors: crawlerScene(null), texts: [skree('HMPH.')], hold: 2 },
+        ], 3),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('Crawler backup. There were always more.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER, [crawler(), crawler(46, CRAWLER.y, true, { offstage: true })]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, [crawler(31, CRAWLER.y, true), crawler(), crawler(46, CRAWLER.y, true, { offstage: true })]), texts: [skree('skree')], hold: 2 },
+          { actors: crawlerScene(C_DROP, [crawler(31, CRAWLER.y), crawler(CRAWLER.x, CRAWLER.y, true), crawler(46, CRAWLER.y, false, { offstage: true })]), texts: [skree('skree')], hold: 1 },
+          { actors: crawlerScene(null, [crawler(32, CRAWLER.y, true), crawler(), crawler(46, CRAWLER.y, true, { offstage: true })]), hold: 2 },
+        ], 3),
+      ),
+      take(
+        ...captioned('The crawler took a ride. Then dropped off.', [
+          ...cStart(),
+          { actors: crawlerScene(C_POKE, [crawler(CRAWLER.x, CRAWLER.y, true)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, [crawler(38, 24)]), hold: 1 },
+          { actors: crawlerScene(C_DROP, [crawler(38, 14)]), hold: 1 },
+          { actors: crawlerScene(C_DROP, [crawler(38, 14, true)]), texts: [skree('...')], hold: 2 },
+          { actors: crawlerScene(C_DROP, [crawler(38, 22, true, { flipY: true })]), hold: 1 },
+          { actors: crawlerScene(null), texts: [skree('OOF.')], hold: 2 },
+        ], 3),
+      ),
+      needing(['hunter'], take(
+        ...captioned('The hunter rolled in the way. Poke denied.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER, undefined, [], [hball(4, true)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, undefined, [], [hball(8)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, undefined, [], [hball(12, true)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, undefined, [], [hball(16)]), hold: 1 },
+          { actors: crawlerScene(C_POKE, undefined, [put('sparkle', 38, 26)], [hball(16)]), hold: 1 },
+          { actors: crawlerScene(C_HOVER, undefined, [], [hball(16)]), texts: [{ ...say('NO.', 33, 12, ink), gone: 'hunter' }], hold: 2 },
+          { actors: crawlerScene(null, undefined, [], [hball(16)]), texts: [{ ...say('NO.', 33, 12, ink), gone: 'hunter' }], hold: 1 },
+          { actors: crawlerScene(null, undefined, [], [hball(12, true)]), hold: 1 },
+          { actors: crawlerScene(null, undefined, [], [hball(8)]), hold: 1 },
+          { actors: crawlerScene(null), hold: 1 },
+        ], 3),
+      )),
+    ],
+    snapped: [
+      take(
+        ...captioned('The crawler left. Spikes and all.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER, [crawler(CRAWLER.x, CRAWLER.y, true)]), texts: [skree('ENOUGH.')], hold: 2 },
+          { actors: crawlerScene(C_HOVER, [crawler(42, CRAWLER.y, false, { offstage: true })]), hold: 1 },
+          { actors: crawlerScene(C_DROP, [crawler(46, CRAWLER.y, true, { offstage: true })]), hold: 1 },
+          { actors: crawlerScene(null, []), texts: [say('...', 38, 13, ink)], hold: 3 },
+        ], 3),
+      ),
+      needing(['hunter'], take(
+        ...captioned('The hunter settled it. The crawler is gone.', [
+          ...cStart(),
+          { actors: crawlerScene(C_HOVER, [crawler(CRAWLER.x, CRAWLER.y, true)]), texts: [her('...')], hold: 1 },
+          { actors: crawlerScene(C_DROP), texts: [her('...')], hold: 1 },
+          { actors: crawlerScene(C_ENTER, [crawler(CRAWLER.x, CRAWLER.y, true)], [], [hunter('attack'), ...hers(fired())]), hold: 1 },
+          { actors: crawlerScene(null, [crawler()], [], [hunter('attack'), ...hers([shot(TARGET)])]), hold: 1 },
+          { actors: [hunter('stand'), put('boom2', CRAWLER.x, CRAWLER.y)], hold: 1 },
+          { actors: [hunter('stand'), put('boom3', CRAWLER.x, CRAWLER.y)], hold: 1 },
+          { actors: [hunter('stand'), put('energyDrop', CRAWLER.x + 3, CRAWLER.y + 3)], texts: [her('SORTED.')], hold: 3 },
+        ], 3),
+      )),
+    ],
+  },
+  // The crawler's rest: the floor is quiet; the hunter checks it anyway.
+  rest: loop(
+    { actors: [hunter('stand'), ...hers(scan('down'))], hold: 6 },
+    { actors: [hunter('stand'), ...hers(scan('level'))], hold: 6 },
+    { actors: [hunter('stand')], texts: [her('QUIET.')], hold: 6 },
+    { actors: [hunter('stand')], hold: 6 },
+  ),
+}
+
+const actions: ThemeAction[] = [pokeHunter, pokeMetroid, pokeCrawler]
+
 const STD_POSES = { stand: 'stand', walk: 'walk', attack: 'attack', itemGet: 'itemGet', sleep: 'ball', lie: 'lie', roll: 'ball2' }
 const VARIA_POSES = { stand: 'variaStand', walk: 'variaWalk', attack: 'variaAttack', itemGet: 'variaItemGet', sleep: 'ball', lie: 'variaLie', roll: 'ball2' }
 const GRAND_POSES = { stand: 'grandStand', walk: 'grandWalk', attack: 'grandAttack', itemGet: 'grandItemGet', sleep: 'bigBall', lie: 'grandLie', roll: 'bigBall2' }
@@ -927,6 +1565,7 @@ export const metroid: Theme = {
   cold,
   overkill,
   events,
+  actions,
   scene: {
     height: 40,
     anchor: ANCHOR,

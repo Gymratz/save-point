@@ -9,7 +9,7 @@
 // same rows-and-legend form.
 
 import { at, hero, loop, mixHex, once, weapon } from './kit'
-import type { Actor, HeroTier, Sprite, Theme } from './types'
+import type { Actor, Animation, Frame, HeroTier, SceneText, Sprite, Theme, ThemeAction } from './types'
 
 // ---------------------------------------------------------------------------
 // Palette: ramps of shades, lightest first
@@ -1300,6 +1300,690 @@ const events: Theme['events'] = {
   ),
 }
 
+// ---------------------------------------------------------------------------
+// Actions: the buttons under the scene. You are an angler on the surface: a
+// line comes down from the top of the scene with a hook on it, and a pinch of
+// flakes falls from above. Each press plays one of the tier's takes, picked at
+// random; the target's patience wears down with repeated presses (see `pressAction`).
+// ---------------------------------------------------------------------------
+
+// The hook: a dashed line from above the scene (49 rows: it still reaches the top at the tallest pane) and a steel
+// hook on the end, 5 by 56, placed by its bottom and always `offstage` (the line crosses the top edge). `bent`:
+// what the clam leaves of it. `line`: the line alone, snapped; `hookCut`: the hook alone, with a stub of line.
+const HOOK_H = 56
+function hookSprite(bent: boolean): Sprite {
+  const p = new Pix(5, HOOK_H)
+  for (let y = 0; y < HOOK_H - 7; y++) p.set(3, y, y % 2 ? HULL[3]! : WHITE)
+  const shape = bent ? ['...o.', '...h.', '...h.', '...h.', '...h.', '...h.', '..ph.'] : ['...o.', '...h.', '...h.', '...h.', '.p.h.', '.h.h.', '.hhh.']
+  p.stamp(shape, { o: BRASS[1]!, h: BELL[2]!, p: BELL[0]! }, 0, HOOK_H - 7)
+  return p.sprite()
+}
+sprites.hook = hookSprite(false)
+sprites.hookBent = hookSprite(true)
+sprites.line = { rows: sprites.hook.rows.slice(0, HOOK_H - 7), legend: sprites.hook.legend }
+sprites.hookCut = { rows: sprites.hook.rows.slice(HOOK_H - 9), legend: sprites.hook.legend }
+sprites.bait = spr(['.ab', 'ba.'], { a: CORAL[1]!, b: CORAL[3]! })
+// A message in a bottle: cork, a neck, the paper rolled inside.
+sprites.bottle = spr(['.k.', '.g.', 'gGg', 'gpG', 'gpG', 'gGG', '.gg'], { k: WOOD[2]!, g: GLASS[1]!, G: GLASS[2]!, p: PAPER[0]! })
+// Fish flakes, a pinch and what is left of it.
+const FLAKE = { a: ORG[1]!, b: YEL[1]!, c: CORAL[1]!, d: ORG[2]! }
+sprites.flakes1 = spr(['.a...b...', '...c...a.', 'b...d....', '....b..c.', '.a....a..', '...c.....'], FLAKE)
+sprites.flakes2 = spr(['.a..b', '...c.', 'b..a.', '.d...'], FLAKE)
+// Sand the clam kicks up, and the mound it leaves.
+const SANDY = { a: SAND[0]!, b: SAND[1]!, c: SAND[2]! }
+sprites.sandPuff = spr(['.a..a.', 'a.bb.a', '.a..a.'], SANDY)
+sprites.mound = spr(['...aa...', '.aabbaa.', 'abbccbba'], SANDY)
+{
+  const p = new Pix(14, 8)
+  for (let y = 0; y < 8; y++)
+    for (let x = 0; x < 14; x++) {
+      const d = Math.hypot((x - 6.5) / 7, (y - 4) / 4)
+      if (d > 1 || bayer(x, y) < d * 0.6) continue
+      p.set(x, y, shade(SAND, 0.3 + d * 0.4, x, y))
+    }
+  sprites.sandCloud = p.sprite()
+}
+// The clam going under: its top rows, drawn lower each frame.
+sprites.clamTop4 = { rows: sprites.clamShut!.rows.slice(0, 4), legend: sprites.clamShut!.legend }
+sprites.clamTop2 = { rows: sprites.clamShut!.rows.slice(0, 2), legend: sprites.clamShut!.legend }
+// A sign on a post, and the scouts after too many flakes.
+sprites.sign = spr(['.aaaaa.', 'abbbbba', 'abcbcba', 'abbbbba', '.aaaaa.', '...d...', '...d...', '...d...', '...d...', '...d...'], { a: WOOD[1]!, b: PAPER[0]!, c: PAPER[3]!, d: WOOD[2]! })
+const FAT = ['t..aaaa.', 'ttAAAAAA', '.tAAAAkA', 'ttAAAAAA', 't.bbbbb.', '...bbb..']
+sprites.scoutFatA = spr(FAT, { a: BIO[1]!, A: BIO[2]!, b: BIO[3]!, t: BIO[4]!, k: INK })
+sprites.scoutFatB = spr(FAT, { a: '#ffd0a0', A: '#ffa860', b: '#f07a40', t: '#c05030', k: INK })
+/** The clam's colors swapped for rock's: a clam pretending. */
+const ROCKY: Record<string, string> = Object.fromEntries([...CLAM.map((c, i) => [c, ROCK[Math.min(i, 4)]!]), [CORAL[1]!, ROCK[2]!], [CORAL[2]!, ROCK[3]!]])
+
+const TXT = '#eafcff'
+const BOX = '#0c2636'
+/** A line in the scene, boxed so it reads at every depth. `gone`: whose it is. */
+const say = (text: string, x: number, y: number, gone?: string): SceneText => ({ text, x, y, color: TXT, bg: BOX, ...(gone ? { gone } : {}) })
+/** A reaction: one-shot, every frame held twice as long as written (a line stays about a second at 6 fps). */
+const take = (...frames: Frame[]): Animation => once(...frames.map(f => ({ ...f, hold: 2 * Math.max(1, f.hold ?? 1) })))
+/** The same caption on every frame from `from` on. */
+const captioned = (caption: string, frames: Frame[], from = 2): Frame[] => frames.map((f, k) => (k >= from ? { ...f, caption } : f))
+/** A take that is only picked while these are present. */
+const needing = (needs: string[], anim: Animation): Animation => ({ ...anim, needs })
+// Who is who, for the rests: the hero and what it holds are `vessel`, the clam is `clam`, the scouts are `fish`.
+const vessel = (pose: string, x = 0, y = 0, swap?: Record<string, string>): Actor => ({ ...hero(pose, x, y, swap), gone: 'vessel' })
+const vesselOf = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'vessel' }))
+/** The clam on the sand to the right of the vessel (columns 36..43), or what is in its place, clam-tagged. */
+const CLAM_AT_ACTION = { x: 22, y: 10 }
+const clamAt = (kind: string, y = CLAM_AT_ACTION.y, swap?: Record<string, string>): Actor => ({ ...placed(kind, CLAM_AT_ACTION.x, y), gone: 'clam', ...(swap ? { swap } : {}) })
+/** A scout, fish-tagged. */
+const fish = (kind: string, x: number, y: number, flip = false, opts: Partial<Actor> = {}): Actor => ({ ...placed(kind, x, y, flip), gone: 'fish', ...opts })
+/** The vessel's line beside its head (row 10, right of every hull), 17 characters at most. */
+const aside = (text: string, y = 0): SceneText => say(text, 17, y, 'vessel')
+/** The vessel's line over its head (row 7, clear of the Nautilus's open hatch), right of the hook's line. */
+const over = (text: string, x = 10): SceneText => say(text, x, -6, 'vessel')
+/** The hook with its bottom at `bottom`. */
+const hookAt = (x: number, bottom: number, opts: Partial<Actor> = {}): Actor => at('hook', x, bottom - HOOK_H, { offstage: true, ...opts })
+const bonk = (x: number, y: number, fixed = false): Actor => at('star', x, y, { fixed })
+
+// 1. Hook the vessel. The hook comes down over the head (it rises with a hull's
+// height, as a prop over the head does): in from above, a hover, the bonk, then
+// the reaction.
+const HX = 5
+const H_ENTER = -12
+const H_HOVER = -4
+const H_POKE = 0
+/** The bait wriggling on the hook's point. */
+const bait = (bottom: number): Actor[] => [at('bait', HX - 1, bottom - 4)]
+/** The vessel and the hook with its bottom at `bottom` (null: gone). */
+const hookScene = (bottom: number | null, crew: Actor[] = [hero('stand')], more: Actor[] = []): Actor[] => [
+  ...vesselOf(crew),
+  ...(bottom === null ? [] : [hookAt(HX, bottom)]),
+  ...more,
+]
+const hStart = (crew: Actor[] = [hero('stand')], extra: (bottom: number) => Actor[] = () => []): Frame[] => [
+  { actors: hookScene(H_ENTER, crew, extra(H_ENTER)), hold: 1 },
+  { actors: hookScene(H_HOVER, crew, extra(H_HOVER)), hold: 1 },
+  { actors: hookScene(H_POKE, crew, [...extra(H_POKE), bonk(9, -3)]), hold: 1 },
+]
+/** Hooked by the top: the vessel goes up the line and out of the scene; the water settles. What both snapped takes end with. */
+const reeledIn = (): Frame[] => [
+  { actors: hookScene(-6, [hero('stand', 0, -6)]), hold: 1 },
+  { actors: hookScene(-16, [hero('stand', 0, -16)], [placed('bubTrail', 6, 0)]), hold: 1 },
+  { actors: hookScene(-30, [{ ...hero('stand', 0, -30), offstage: true }], [placed('bubTrail', 7, -8)]), hold: 1 },
+  { actors: [placed('bub2', 8, -4), placed('bub1', 6, 2)], texts: [say('...', 17, 0)], hold: 3 },
+]
+const hookVessel: ThemeAction = {
+  id: 'vessel',
+  label: 'HOOK VESSEL',
+  restLabel: '(REELED IN)',
+  gone: ['vessel'],
+  needs: ['vessel'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('A hook. The vessel declines, politely.', [
+          ...hStart(),
+          { actors: hookScene(H_HOVER), texts: [aside('NO THANK YOU.')], hold: 3 },
+          { actors: hookScene(H_ENTER), texts: [aside('NO THANK YOU.')], hold: 1 },
+          { actors: hookScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The vessel inspects the bait. Not fresh.', [
+          ...hStart([hero('stand')], bait),
+          { actors: hookScene(H_HOVER, [hero('itemGet')], bait(H_HOVER)), texts: [aside('HMM.')], hold: 2 },
+          { actors: hookScene(H_HOVER, [hero('itemGet')], bait(H_HOVER)), texts: [aside('NOT FRESH.')], hold: 3 },
+          { actors: hookScene(null), texts: [aside('NOT FRESH.')], hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned("The vessel sends up the ship's log. Enjoy.", [
+          ...hStart(),
+          { actors: hookScene(-8, [hero('itemGet')], [at('book1', HX - 3, -9)]), hold: 2 },
+          { actors: hookScene(-14, [hero('itemGet')], [at('book1', HX - 3, -15)]), hold: 1 },
+          { actors: hookScene(-24, [hero('stand')], [at('book1', HX - 3, -25, { offstage: true })]), texts: [aside('ENJOY.')], hold: 1 },
+          { actors: hookScene(null), texts: [aside('ENJOY.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Hook, line... the vessel has dozed off.', [
+          ...hStart(),
+          { actors: hookScene(H_HOVER), texts: [aside('...')], hold: 1 },
+          { actors: hookScene(H_POKE, [hero('stand')], [bonk(9, -3)]), texts: [aside('...')], hold: 1 },
+          { actors: hookScene(H_HOVER, [hero('sleep')]), texts: [aside('z', -2)], hold: 3 },
+          { actors: hookScene(null, [hero('sleep')]), texts: [aside('Z', -4)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The vessel pings the hook. Result: a hook.', [
+          ...hStart(),
+          { actors: hookScene(H_HOVER, [hero('stand'), ring('ping1')]), hold: 1 },
+          { actors: hookScene(H_HOVER, [hero('stand'), ring('ping2')]), hold: 1 },
+          { actors: hookScene(H_HOVER, [hero('stand'), ring('ping3'), ring('ping2dim')]), hold: 1 },
+          { actors: hookScene(H_HOVER), texts: [aside('A HOOK.')], hold: 3 },
+          { actors: hookScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The vessel waves up at you. Hello, surface.', [
+          ...hStart(),
+          { actors: hookScene(H_HOVER, [hero('itemGet')]), texts: [aside('HELLO UP THERE.')], hold: 3 },
+          { actors: hookScene(H_HOVER), hold: 1 },
+          { actors: hookScene(H_ENTER, [hero('itemGet')]), texts: [aside('HELLO?')], hold: 2 },
+          { actors: hookScene(null), hold: 1 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The vessel tugs back. The line goes taut.', [
+          ...hStart(),
+          { actors: hookScene(H_POKE, [hero('itemGet')]), hold: 1 },
+          { actors: hookScene(2, [hero('itemGet')]), texts: [aside('TUG.')], hold: 2 },
+          { actors: hookScene(-2, [hero('itemGet')]), texts: [aside('TUG.')], hold: 1 },
+          { actors: hookScene(2, [hero('itemGet')]), texts: [aside('HA.')], hold: 2 },
+          { actors: hookScene(H_ENTER), hold: 1 },
+          { actors: hookScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Snagged on the hull. The vessel sighs.', [
+          ...hStart(),
+          { actors: hookScene(H_POKE), hold: 1 },
+          { actors: hookScene(H_POKE, [hero('stand'), at('sighBubble', 12, -4)]), hold: 2 },
+          { actors: hookScene(H_POKE, [hero('stand'), at('sighBubble', 12, -8)]), texts: [aside('~sigh~', -2)], hold: 3 },
+          { actors: hookScene(-2), hold: 1 },
+          { actors: hookScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The vessel cuts the line. With the welder.', [
+          ...hStart(),
+          { actors: hookScene(H_POKE, [hero('itemGet')], [at('weld', 7, -6)]), hold: 1 },
+          { actors: hookScene(H_POKE, [hero('itemGet')], [at('weldBig', 6, -7), at('spark1', 9, -10)]), hold: 1 },
+          { actors: [...vesselOf([hero('itemGet')]), at('line', HX, -20 - (HOOK_H - 7), { offstage: true }), placed('hookCut', 15, -1)], hold: 1 },
+          { actors: [vessel('stand'), placed('hookCut', 17, 4)], hold: 1 },
+          { actors: [vessel('stand'), placed('hookCut', 17, 7)], texts: [aside('snip.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The vessel sidesteps. Go fish. Elsewhere.', [
+          { actors: hookScene(H_ENTER), hold: 1 },
+          { actors: hookScene(H_HOVER, [hero('walk', 3)]), hold: 1 },
+          { actors: hookScene(H_POKE, [hero('stand', 5)]), texts: [say('MISSED.', 22, 0, 'vessel')], hold: 2 },
+          { actors: hookScene(H_HOVER, [hero('stand', 5)]), texts: [say('GO FISH.', 22, 0, 'vessel')], hold: 3 },
+          { actors: hookScene(null, [hero('walk', 2)]), hold: 1 },
+          { actors: hookScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Hooked to the depth marker. Pull away.', [
+          ...hStart(),
+          { actors: hookScene(H_POKE, [hero('itemGet')], [at('marker', MARKER.x, MARKER.y)]), hold: 1 },
+          { actors: hookScene(null, [hero('itemGet')], [at('marker', MARKER.x, MARKER.y), hookAt(12, 4, { fixed: true })]), hold: 1 },
+          { actors: hookScene(null, [hero('stand')], [at('marker', MARKER.x, MARKER.y), hookAt(19, 2, { fixed: true })]), hold: 1 },
+          { actors: hookScene(null, [hero('stand')], [at('marker', MARKER.x, MARKER.y), hookAt(19, 2, { fixed: true })]), texts: [aside('PULL AWAY.')], hold: 3 },
+          { actors: hookScene(null, [hero('stand')], [at('marker', MARKER.x, MARKER.y), hookAt(19, 0, { fixed: true }), bonk(25, 0, true)]), texts: [aside('PULL AWAY.')], hold: 1 },
+          { actors: hookScene(null, [hero('stand')], [at('marker', MARKER.x, MARKER.y), hookAt(19, 2, { fixed: true })]), hold: 1 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The vessel baits the hook. With a jellyfish.', [
+          ...hStart(),
+          { actors: hookScene(H_HOVER, [hero('walk')], [jelly(1, 18, -3)]), hold: 1 },
+          { actors: hookScene(H_HOVER, [hero('itemGet')], [at('jelly1', HX - 1, H_HOVER - 11)]), hold: 2 },
+          { actors: hookScene(H_ENTER, [hero('itemGet')], [at('jelly2', HX - 1, H_ENTER - 11, { offstage: true })]), texts: [aside('ENJOY.')], hold: 2 },
+          { actors: hookScene(-22, [hero('stand')], [at('jelly1', HX - 1, -33, { offstage: true })]), texts: [aside('ENJOY.')], hold: 1 },
+          { actors: hookScene(null), texts: [aside('ENJOY.')], hold: 2 },
+        ]),
+      ),
+      needing(['fish'], take(
+        ...captioned('A scout is sent up the line. Bite the angler.', [
+          ...hStart(),
+          { actors: hookScene(H_HOVER, [hero('itemGet')], [{ ...placed('scoutA', 16, 4, true), gone: 'fish' }]), hold: 1 },
+          { actors: hookScene(H_HOVER, [hero('stand')], [{ ...placed('scoutA', 9, -8, true), gone: 'fish' }]), hold: 1 },
+          { actors: hookScene(H_HOVER, [hero('stand')], [{ ...placed('scoutA', 6, -17, true), gone: 'fish', offstage: true }]), hold: 1 },
+          { actors: hookScene(H_ENTER), texts: [aside('GET HIM.')], hold: 3 },
+          { actors: hookScene(null), texts: [aside('GET HIM.')], hold: 1 },
+        ]),
+      )),
+      take(
+        ...captioned('A message in a bottle goes up. It says STOP.', [
+          ...hStart(),
+          { actors: hookScene(H_HOVER, [hero('itemGet')], [at('bottle', HX + 4, H_HOVER - 7)]), hold: 2 },
+          { actors: hookScene(H_ENTER, [hero('itemGet')], [at('bottle', HX + 4, H_ENTER - 7, { offstage: true })]), texts: [aside('READ IT.')], hold: 2 },
+          { actors: hookScene(-22, [hero('stand')], [at('bottle', HX + 4, -29, { offstage: true })]), texts: [aside('READ IT.')], hold: 1 },
+          { actors: hookScene(null), texts: [aside('READ IT.')], hold: 2 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('Hooked. The vessel is reeled in. Fresh catch.', [
+          ...hStart(),
+          { actors: hookScene(H_POKE, [hero('stand')], [bonk(9, -3)]), hold: 1 },
+          { actors: hookScene(H_POKE, [hero('itemGet')]), texts: [aside('WAIT.')], hold: 2 },
+          ...reeledIn(),
+        ]),
+      ),
+      take(
+        ...captioned('The vessel takes the bait. Going up. Goodbye.', [
+          ...hStart([hero('stand')], bait),
+          { actors: hookScene(H_HOVER, [hero('itemGet')], bait(H_HOVER)), texts: [aside('FINE.')], hold: 2 },
+          { actors: hookScene(H_HOVER, [hero('itemGet')], bait(H_HOVER)), texts: [aside('TAKE ME UP.')], hold: 3 },
+          ...reeledIn(),
+        ]),
+      ),
+    ],
+  },
+  // The vessel's rest: the seabed without it; the scouts come looking, the clam waits.
+  rest: loop(
+    { actors: [clamAt('clamShut'), fish('scoutA', 26, 2, true), fish('scoutB', 30, 8, true, { offstage: true })], hold: 6 },
+    { actors: [clamAt('clamOpen'), fish('scoutA', 14, 0, true), fish('scoutB', 20, 7, true)], hold: 6 },
+    { actors: [clamAt('clamShut'), fish('scoutA', 2, 2, true), fish('scoutB', 10, 8, true)], texts: [say('?', 11, -2, 'fish')], hold: 6 },
+    { actors: [clamAt('clamShut'), placed('bub1', 8, 6)], hold: 6 },
+    { actors: [clamAt('clamShut'), placed('bub2', 7, 2)], hold: 6 },
+  ),
+}
+
+// 2. Poke the clam. The clam sits on the sand to the right of the vessel; the
+// hook is scenery here (it does not rise with a hull).
+const CLAM_SHUT = clamAt('clamShut')
+const CLAM_OPEN = clamAt('clamOpen')
+const CX = 23
+const C_ENTER = -8
+const C_HOVER = 6
+const C_POKE = 11
+/** The vessel watching, the clam (or what is in its place), the hook at `bottom` (null: gone). */
+const clamScene = (bottom: number | null, shell: Actor[] = [CLAM_SHUT], more: Actor[] = [], crew: Actor[] = [hero('stand')]): Actor[] => [
+  ...vesselOf(crew),
+  ...shell,
+  ...(bottom === null ? [] : [hookAt(CX, bottom, { fixed: true })]),
+  ...more,
+]
+const cStart = (shell: Actor[] = [CLAM_SHUT]): Frame[] => [
+  { actors: clamScene(C_ENTER, shell), hold: 1 },
+  { actors: clamScene(C_HOVER, shell), hold: 1 },
+  { actors: clamScene(C_POKE, shell, [bonk(27, 8, true)]), hold: 1 },
+]
+/** The clam's line, left of the hook's line (row 13): seven characters at most, or nine a row up. */
+const clack = (text: string, y = 6): SceneText => say(text, 16, y, 'clam')
+/** The clam goes under, sand flying, and leaves a mound. What both snapped takes end with. */
+const clamDigs = (): Frame[] => [
+  { actors: clamScene(null, [clamAt('clamTop4', 12)], [placed('sandPuff', 19, 9), placed('sandPuff', 28, 9)]), hold: 1 },
+  { actors: clamScene(null, [clamAt('clamTop2', 14)], [placed('sandPuff', 21, 8), placed('sandPuff', 27, 6)]), hold: 1 },
+  { actors: clamScene(null, [], [placed('mound', CLAM_AT_ACTION.x, 12), placed('sandPuff', 24, 7)]), hold: 1 },
+  { actors: clamScene(null, [], [placed('mound', CLAM_AT_ACTION.x, 12)]), texts: [aside('...')], hold: 3 },
+]
+const pokeClam: ThemeAction = {
+  id: 'clam',
+  label: 'POKE CLAM',
+  restLabel: '(CLAM DUG IN)',
+  gone: ['clam'],
+  needs: ['clam'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked the clam. It looks, then shuts. Clack.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE, [CLAM_OPEN]), hold: 1 },
+          { actors: clamScene(C_HOVER, [CLAM_OPEN]), texts: [clack('...')], hold: 2 },
+          { actors: clamScene(C_HOVER), texts: [clack('CLACK.')], hold: 2 },
+          { actors: clamScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The clam shows its pearl. Then thinks better.', [
+          ...cStart(),
+          { actors: clamScene(C_HOVER, [CLAM_OPEN], [placed('shine', 21, 9)]), hold: 2 },
+          { actors: clamScene(C_HOVER, [CLAM_OPEN]), texts: [clack('NOPE.')], hold: 1 },
+          { actors: clamScene(C_HOVER), texts: [clack('NOPE.')], hold: 2 },
+          { actors: clamScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The clam is asleep. Clams do that. All day.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE), texts: [clack('z', 6)], hold: 2 },
+          { actors: clamScene(C_HOVER), texts: [clack('Z', 4)], hold: 2 },
+          { actors: clamScene(null), texts: [clack('z', 6)], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The clam squirts. That is clam for no.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE, [CLAM_OPEN], [placed('bub2', 25, 6)]), hold: 1 },
+          { actors: clamScene(C_HOVER, [CLAM_SHUT], [placed('bub3', 25, 1), placed('bub1', 24, 5)]), hold: 1 },
+          { actors: clamScene(2, [CLAM_SHUT], [placed('bubPop', 25, -2)]), texts: [clack('pfft.')], hold: 2 },
+          { actors: clamScene(null), texts: [clack('pfft.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The clam has nothing to add. It is a clam.', [
+          ...cStart(),
+          { actors: clamScene(C_HOVER), texts: [clack('...')], hold: 3 },
+          { actors: clamScene(C_POKE, [CLAM_SHUT], [bonk(27, 8, true)]), hold: 1 },
+          { actors: clamScene(C_HOVER), texts: [clack('...')], hold: 2 },
+          { actors: clamScene(null), hold: 1 },
+        ]),
+      ),
+      needing(['vessel'], take(
+        ...captioned('The vessel claims the clam. Finders keepers.', [
+          ...cStart(),
+          { actors: clamScene(C_HOVER, [CLAM_SHUT], [], [hero('lamp'), lamp()]), hold: 1 },
+          { actors: clamScene(C_HOVER, [CLAM_SHUT], [], [hero('lamp'), lamp()]), texts: [aside('MINE.')], hold: 3 },
+          { actors: clamScene(null, [CLAM_SHUT], [], [hero('lamp'), lamp()]), texts: [aside('MINE.')], hold: 1 },
+          { actors: clamScene(null), hold: 1 },
+        ]),
+      )),
+    ],
+    irritated: [
+      take(
+        ...captioned('The clam bites the hook. And keeps it.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE, [CLAM_OPEN]), hold: 1 },
+          { actors: clamScene(C_POKE), texts: [clack('CLACK.')], hold: 2 },
+          { actors: clamScene(C_POKE, [CLAM_SHUT], [bonk(27, 4, true)]), hold: 1 },
+          { actors: clamScene(C_POKE, [CLAM_SHUT], [bonk(26, 0, true)]), texts: [clack('MINE NOW.', 2)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The clam spits a pearl at you. Ptoo.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE, [CLAM_OPEN]), hold: 1 },
+          { actors: clamScene(C_HOVER, [clamAt('clamEmpty')], [placed('pearl', 25, 4)]), hold: 1 },
+          { actors: clamScene(-2, [clamAt('clamEmpty')], [placed('pearl', 25, -4)]), hold: 1 },
+          { actors: clamScene(C_ENTER, [clamAt('clamEmpty')], [at('pearl', 25, -14, { fixed: true, offstage: true })]), texts: [clack('PTOO.')], hold: 2 },
+          { actors: clamScene(null), texts: [clack('PTOO.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The clam is a rock now. Nothing to see here.', [
+          ...cStart(),
+          { actors: clamScene(C_HOVER), hold: 1 },
+          { actors: clamScene(C_HOVER, [clamAt('clamShut', CLAM_AT_ACTION.y, ROCKY)]), hold: 1 },
+          { actors: clamScene(C_POKE, [clamAt('clamShut', CLAM_AT_ACTION.y, ROCKY)]), texts: [clack('A ROCK.')], hold: 3 },
+          { actors: clamScene(C_HOVER, [clamAt('clamShut', CLAM_AT_ACTION.y, ROCKY)]), hold: 1 },
+          { actors: clamScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The clam snaps. The hook comes back bent.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE, [CLAM_OPEN]), hold: 1 },
+          { actors: clamScene(C_POKE, [CLAM_SHUT], [bonk(27, 8, true)]), texts: [clack('CLACK.')], hold: 1 },
+          { actors: clamScene(null, [CLAM_SHUT], [at('hookBent', CX, C_HOVER - HOOK_H, { fixed: true, offstage: true })]), hold: 1 },
+          { actors: clamScene(null, [CLAM_SHUT], [at('hookBent', CX, C_ENTER - HOOK_H, { fixed: true, offstage: true })]), texts: [clack('HMPH.')], hold: 2 },
+          { actors: clamScene(null), texts: [clack('HMPH.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The clam kicks up sand. Visibility: nil.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE, [CLAM_SHUT], [placed('sandPuff', 19, 8)]), hold: 1 },
+          { actors: clamScene(C_HOVER, [CLAM_SHUT], [placed('sandPuff', 18, 5), placed('sandPuff', 27, 4)]), hold: 1 },
+          { actors: clamScene(C_HOVER, [CLAM_SHUT], [placed('sandCloud', 18, 4)]), hold: 3 },
+          { actors: clamScene(null, [CLAM_SHUT], [placed('sandPuff', 20, 7), placed('sandPuff', 26, 9)]), hold: 1 },
+          { actors: clamScene(null), texts: [clack('...')], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The clam calls a jellyfish. It stings first.', [
+          ...cStart(),
+          { actors: clamScene(C_HOVER, [CLAM_SHUT], [jelly(1, 26, -6)]), hold: 1 },
+          { actors: clamScene(C_HOVER, [CLAM_SHUT], [jelly(2, 25, -2), placed('zap', 25, 3)]), hold: 1 },
+          { actors: clamScene(-2, [CLAM_SHUT], [jelly(1, 25, -2), placed('zap', 24, 1)]), texts: [clack('THANKS.')], hold: 2 },
+          { actors: clamScene(C_ENTER, [CLAM_SHUT], [jelly(2, 25, -4)]), hold: 1 },
+          { actors: clamScene(null, [CLAM_SHUT], [jelly(1, 26, -8)]), texts: [clack('THANKS.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The clam ate the hook. The line is cut. Snap.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE, [CLAM_OPEN]), hold: 1 },
+          { actors: clamScene(C_POKE), hold: 1 },
+          { actors: clamScene(null, [CLAM_SHUT], [at('line', CX, -14 - (HOOK_H - 7), { fixed: true, offstage: true })]), texts: [clack('snap.')], hold: 1 },
+          { actors: clamScene(null, [CLAM_SHUT], [at('line', CX, -26 - (HOOK_H - 7), { fixed: true, offstage: true })]), texts: [clack('MUNCH.')], hold: 2 },
+          { actors: clamScene(null), texts: [clack('BURP.')], hold: 3 },
+        ]),
+      ),
+      needing(['vessel'], take(
+        ...captioned('The vessel steps in. Hands off the clam.', [
+          ...cStart(),
+          { actors: clamScene(C_HOVER, [CLAM_SHUT], [], [hero('walk', 3)]), hold: 1 },
+          { actors: clamScene(C_HOVER, [CLAM_SHUT], [], [hero('stand', 5)]), texts: [over('BACK OFF.', 9)], hold: 3 },
+          { actors: clamScene(-2, [CLAM_SHUT], [], [hero('stand', 5)]), texts: [over('BACK OFF.', 9)], hold: 1 },
+          { actors: clamScene(null, [CLAM_SHUT], [], [hero('walk', 2)]), hold: 1 },
+          { actors: clamScene(null), hold: 1 },
+        ]),
+      )),
+    ],
+    snapped: [
+      take(
+        ...captioned('The clam digs in. See you next tide.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE, [CLAM_OPEN]), hold: 1 },
+          { actors: clamScene(C_HOVER), texts: [clack('BYE.')], hold: 2 },
+          ...clamDigs(),
+        ]),
+      ),
+      take(
+        ...captioned('The clam takes the hook down with it. Trophy.', [
+          ...cStart(),
+          { actors: clamScene(C_POKE, [CLAM_OPEN]), hold: 1 },
+          { actors: clamScene(C_POKE), texts: [clack('CLACK.')], hold: 1 },
+          { actors: clamScene(null, [CLAM_SHUT], [at('line', CX, -10 - (HOOK_H - 7), { fixed: true, offstage: true })]), texts: [clack('snap.')], hold: 1 },
+          ...clamDigs(),
+        ]),
+      ),
+    ],
+  },
+  // The clam's rest: a mound where it was; the vessel waits it out.
+  rest: loop(
+    { actors: [vessel('stand'), placed('mound', CLAM_AT_ACTION.x, 12)], hold: 6 },
+    { actors: [vessel('stand'), placed('mound', CLAM_AT_ACTION.x, 12), placed('bub1', 25, 10)], hold: 6 },
+    { actors: [vessel('stand'), placed('mound', CLAM_AT_ACTION.x, 12), placed('bub2', 25, 6)], texts: [aside('...')], hold: 6 },
+    { actors: [...vesselOf([hero('lamp'), lamp()]), placed('mound', CLAM_AT_ACTION.x, 12)], hold: 6 },
+    { actors: [vessel('stand'), placed('mound', CLAM_AT_ACTION.x, 12)], texts: [aside('HM.')], hold: 6 },
+  ),
+}
+
+// 3. Feed the fish. A pinch of flakes falls from the surface; the two scouts
+// come for it from the right, one above the flakes, one below.
+const FLAKES_X = 22
+const FA = { x: 13, y: -9 }
+const FB = { x: 26, y: -8 }
+const fishA = (x = FA.x, y = FA.y, flip = false, opts: Partial<Actor> = {}): Actor => fish('scoutA', x, y, flip, opts)
+const fishB = (x = FB.x, y = FB.y, flip = true, opts: Partial<Actor> = {}): Actor => fish('scoutB', x, y, flip, opts)
+const FISH: Actor[] = [fishA(), fishB()]
+/** The pinch falling: `offstage` while it crosses the top edge. */
+const pinch = (y: number, x = FLAKES_X): Actor => at('flakes1', x, y, { fixed: true, ...(y <= -17 ? { offstage: true } : {}) })
+/** What is left of it, between the two fish. */
+const CRUMBS = placed('flakes2', 21, -7)
+/** The vessel, the fish, the flakes (if any) and more. */
+const fishScene = (flakes: Actor[], school: Actor[] = FISH, more: Actor[] = [], crew: Actor[] = [hero('stand')]): Actor[] => [...vesselOf(crew), ...school, ...flakes, ...more]
+const fStart = (): Frame[] => [
+  { actors: fishScene([pinch(-22)], []), hold: 1 },
+  { actors: fishScene([pinch(-14)], []), hold: 1 },
+  { actors: fishScene([pinch(-8)], [fishA(24, -15, true), fishB(30, -8, true, { offstage: true })]), hold: 1 },
+]
+/** A fish's line (row 3, over everything). */
+const glub = (text: string, x = 12, y = -14): SceneText => say(text, x, y, 'fish')
+const feedFish: ThemeAction = {
+  id: 'fish',
+  label: 'FEED FISH',
+  restLabel: '(FISH GONE)',
+  gone: ['fish'],
+  needs: ['fish'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Flakes! The fish are delighted. Briefly.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), texts: [glub('munch')], hold: 2 },
+          { actors: fishScene([]), texts: [glub('munch')], hold: 2 },
+          { actors: fishScene([], [fishA(14, -10), fishB(26, -7)]), hold: 1 },
+          { actors: fishScene([]), texts: [glub('MORE?')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The fish eat. The vessel is not offered any.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), texts: [glub('munch')], hold: 2 },
+          { actors: fishScene([]), texts: [aside('AND ME?')], hold: 3 },
+          { actors: fishScene([]), texts: [glub('NO.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('One fish ate it all. The other has notes.', [
+          ...fStart(),
+          { actors: fishScene([placed('flakes2', 20, -8)], [fishA(), fishB(30, -10, true, { offstage: true })]), hold: 1 },
+          { actors: fishScene([], [fishA(), fishB(26, -10)]), texts: [glub('HEY.', 22)], hold: 2 },
+          { actors: fishScene([], [fishA(), fishB(26, -10)]), texts: [glub('HEY.', 22), glub('burp.', 10, -12)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('A flake lands on the vessel. The fish follow.', [
+          { actors: fishScene([pinch(-22)], []), hold: 1 },
+          { actors: fishScene([pinch(-14, 16)], []), hold: 1 },
+          { actors: fishScene([pinch(-8, 10)], [fishA(30, -8, true, { offstage: true }), fishB(26, -14)]), hold: 1 },
+          { actors: fishScene([placed('flakes2', 6, -3)], [fishA(20, -5, true), fishB(18, -11)]), hold: 1 },
+          { actors: fishScene([placed('flakes2', 6, -3)], [fishA(16, -6, true), fishB(14, -12)]), texts: [aside('HEY.')], hold: 2 },
+          { actors: fishScene([placed('flakes2', 6, -3)], [fishA(16, -6, true), fishB(13, -12)]), texts: [aside('NOT FOOD.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Fed. The fish do a lap of thanks.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([], [fishA(22, -14), fishB(14, -4, false)]), hold: 1 },
+          { actors: fishScene([], [fishA(26, -8, true), fishB(13, -11, false)]), hold: 1 },
+          { actors: fishScene([], [fishA(20, -12, true), fishB(22, -5, false)]), hold: 1 },
+          { actors: fishScene([]), texts: [glub('THANKS.')], hold: 3 },
+        ]),
+      ),
+      needing(['vessel'], take(
+        ...captioned('The fish share. One flake, for the vessel.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([placed('flakes2', 15, -6)], [fishA(17, -7, true), fishB()]), hold: 1 },
+          { actors: fishScene([placed('flakes2', 9, -4)], [fishA(11, -6, true), fishB()]), hold: 1 },
+          { actors: fishScene([placed('flakes2', 7, -3)], [fishA(15, -8, true), fishB()]), texts: [aside('FOR ME?')], hold: 2 },
+          { actors: fishScene([placed('flakes2', 7, -3)], [fishA(17, -9, true), fishB()]), texts: [aside('THANKS.')], hold: 3 },
+        ]),
+      )),
+    ],
+    irritated: [
+      take(
+        ...captioned('The fish are full. Very full. Belly up.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), texts: [glub('munch')], hold: 1 },
+          { actors: fishScene([], [fishA(FA.x, FA.y, false, { flipY: true }), fishB(FB.x, FB.y, true, { flipY: true })]), texts: [glub('urp.')], hold: 3 },
+          { actors: fishScene([], [fishA(FA.x, -12, false, { flipY: true }), fishB(FB.x, -11, true, { flipY: true })]), texts: [glub('urp.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Spat out. The fish want the good flakes.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([placed('flakes2', 22, -11)]), texts: [glub('PTOO.')], hold: 1 },
+          { actors: fishScene([placed('flakes2', 22, -16)]), texts: [glub('PTOO.')], hold: 1 },
+          { actors: fishScene([at('flakes2', 22, -22, { fixed: true, offstage: true })]), texts: [glub('NO.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Too many flakes. The water clouds over.', [
+          { actors: fishScene([pinch(-22), pinch(-26, 12)], []), hold: 1 },
+          { actors: fishScene([pinch(-14), pinch(-18, 12), pinch(-24, 18)], []), hold: 1 },
+          { actors: fishScene([pinch(-8), pinch(-12, 12), pinch(-17, 18)], [fishA(24, -15, true), fishB(30, -8, true, { offstage: true })]), hold: 1 },
+          { actors: fishScene([pinch(-2), pinch(-6, 12), pinch(-11, 18), pinch(-16, 25)], [], [placed('bub2', 14, 2)]), texts: [aside('COUGH.')], hold: 2 },
+          { actors: fishScene([pinch(3), pinch(0, 12), pinch(-5, 18), pinch(-10, 25)]), texts: [glub('TOO MUCH.')], hold: 3 },
+          { actors: fishScene([placed('flakes2', 18, 11), placed('flakes2', 26, 11), pinch(1, 25)]), hold: 2 },
+        ]),
+      ),
+      needing(['vessel'], take(
+        ...captioned('The fish file a complaint. Via the vessel.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([]), texts: [glub('TELL HIM.')], hold: 2 },
+          { actors: fishScene([]), texts: [aside('THEY SAY STOP.')], hold: 3 },
+          { actors: fishScene([]), texts: [aside('...')], hold: 1 },
+        ]),
+      )),
+      take(
+        ...captioned('The fish turn their backs. Fish can do that.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([], [fishA(FA.x, FA.y, true), fishB(FB.x, FB.y, false)]), texts: [glub('HMPH.')], hold: 3 },
+          { actors: fishScene([], [fishA(FA.x, FA.y, true), fishB(FB.x, FB.y, false)]), hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The flakes drew a jellyfish. The fish scatter.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([CRUMBS], FISH, [jelly(1, 21, -16)]), hold: 1 },
+          { actors: fishScene([], [fishA(6, -14), fishB(30, -9, true, { offstage: true })], [jelly(2, 21, -12)]), hold: 1 },
+          { actors: fishScene([], [fishA(4, -15)], [jelly(1, 21, -9)]), texts: [glub('NOPE.', 4)], hold: 2 },
+          { actors: fishScene([], [fishA(4, -15)], [jelly(2, 21, -7)]), texts: [aside('OH NO.')], hold: 2 },
+        ]),
+      ),
+      needing(['vessel'], take(
+        ...captioned('A sign goes up. DO NOT FEED THE FISH.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([], FISH, [placed('sign', 18, 6)], [hero('itemGet')]), hold: 1 },
+          { actors: fishScene([], FISH, [placed('sign', 18, 6)]), texts: [say('DO NOT FEED.', 17, 2, 'vessel')], hold: 3 },
+          { actors: fishScene([], FISH, [placed('sign', 18, 6)]), texts: [say('DO NOT FEED.', 17, 2, 'vessel'), glub('AW.', 22)], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('The fish are too full to swim. They sink.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([], [fish('scoutFatA', 13, -9), fish('scoutFatB', 26, -8, true)]), hold: 1 },
+          { actors: fishScene([], [fish('scoutFatA', 14, -3), fish('scoutFatB', 26, -2, true)]), hold: 1 },
+          { actors: fishScene([], [fish('scoutFatA', 16, 10), fish('scoutFatB', 26, 10, true)]), texts: [glub('urp.', 20, 6)], hold: 3 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('Overfed, the fish go for the source. You.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([], [fishA(16, -13), fishB(24, -14)]), hold: 1 },
+          { actors: fishScene([], [fishA(18, -19), fishB(24, -20)]), hold: 1 },
+          { actors: fishScene([], [fishA(20, -25, false, { offstage: true }), fishB(24, -27, true, { offstage: true })]), texts: [glub('CHOMP.')], hold: 2 },
+          { actors: fishScene([], []), texts: [aside('GOOD LUCK.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The fish have left for a cleaner tank.', [
+          ...fStart(),
+          { actors: fishScene([CRUMBS]), hold: 1 },
+          { actors: fishScene([], [fishA(20, -9), fishB(28, -7, false, { offstage: true })]), hold: 1 },
+          { actors: fishScene([], [fishA(28, -9, false, { offstage: true }), fishB(34, -7, false, { offstage: true })]), hold: 1 },
+          { actors: fishScene([], [fishA(34, -9, false, { offstage: true })]), hold: 1 },
+          { actors: fishScene([], []), texts: [aside('...')], hold: 3 },
+          { actors: fishScene([], []), texts: [aside('WELL.')], hold: 2 },
+        ]),
+      ),
+    ],
+  },
+  // The fish's rest: the vessel beside its sign; flakes fall to nobody.
+  rest: loop(
+    { actors: [vessel('stand'), placed('sign', 18, 6)], hold: 6 },
+    { actors: [vessel('stand'), placed('sign', 18, 6), pinch(-12)], hold: 6 },
+    { actors: [vessel('stand'), placed('sign', 18, 6), pinch(-2)], texts: [aside('...')], hold: 6 },
+    { actors: [vessel('stand'), placed('sign', 18, 6), placed('flakes2', 23, 11)], hold: 6 },
+    { actors: [vessel('lie'), placed('sign', 18, 6), placed('flakes2', 23, 11)], hold: 8 },
+  ),
+}
+
+const actions: ThemeAction[] = [hookVessel, pokeClam, feedFish]
+
 /** A vessel's poses. `lamp`: holding the lamp out (the `attack` sprite, but for the Leviathan, which dangles it from its lure). */
 const poses = (p: string, lamp = `${p}Attack`) => ({ stand: `${p}Stand`, walk: `${p}Walk`, attack: `${p}Attack`, itemGet: `${p}ItemGet`, sleep: `${p}Sleep`, lie: `${p}Lie`, lamp })
 
@@ -1337,6 +2021,7 @@ export const deepsea: Theme = {
   cold,
   overkill,
   events,
+  actions,
   scene: {
     height: 40,
     anchor: { x: 14, y: 20 },

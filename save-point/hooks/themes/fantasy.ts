@@ -14,7 +14,7 @@
 // Paladin, the widest, at 18..39). Past that only scenery, from the right edge in.
 
 import { at, hero, loop, once, weapon } from './kit'
-import type { Actor, HeroTier, SceneText, Sprite, Theme } from './types'
+import type { Actor, Animation, Frame, HeroTier, SceneText, Sprite, Theme, ThemeAction } from './types'
 
 // ---------------------------------------------------------------------------
 // Palette
@@ -630,6 +630,21 @@ const sprites: Theme['sprites'] = {
     { r: 'mogPom', k: 'ink', W: 'cloud', n: 'mogNose', p: 'mogWing', o: 'skinS' },
   ),
   savePoint: spr(['....W.....', '...WXW....', '....W.....', '..sWWWWs..', 'sWs.ss.sWs', '..sWWWWs..'], { s: 'rune', W: 'runeB', X: 'white' }),
+  // The moogle with its pom-pom swung and its wings out (petted, hopping, flying off).
+  moogle2: spr(
+    ['......rr..', '.....krr..', '.....k....', '.WW..k.WW.', '.WWWWWWWW.', '.WkWWkWWW.', '.WWnWWWWW.', '..WWWWWW..', '...WWWWppp', '...WWWWp..', '...WWWW...', '...oo.oo..'],
+    { r: 'mogPom', k: 'ink', W: 'cloud', n: 'mogNose', p: 'mogWing', o: 'skinS' },
+  ),
+
+  // You: the battle menu's pointing glove, a gold cuff at the wrist. Pointing left beside the party;
+  // turned a quarter (`turn: 'ccw'`) it points down from the top of the scene.
+  cursor: spr(['.....aa...', '....aWWaa.', '.aaaaWWWWY', 'aWWWWWWWWY', 'aWwwwWWWWY', '.aaaaWwwwY', '....aWwwwY', '.....aaaa.'], { a: 'ink', W: 'white', w: 'palP', Y: 'gold' }),
+  // Libra's reticle sized for the glove.
+  scanYou: reticle(12, 10),
+  // Mognet: a letter with a gold seal.
+  letter: spr(['aaaaaa', 'aWaaWa', 'aWWYWa', 'aaaaaa'], { a: 'ink', W: 'white', Y: 'gold' }),
+  // The goblin's knife, thrown (point up).
+  dagger: spr(['.x.', '.x.', '.x.', 'YYY', '.g.'], { x: 'knife', Y: 'gold', g: 'grip' }),
   castle: spr(
     ['.r.........r.', '.T....r....T.', 'TTT...T...TTT', 'TtT..TTT..TtT', 'TTTTTTtTTTTTT', 'TTtTTTTTTTtTT', 'TTTTTkkkTTTTT', 'TTtTTkkkTTtTT', 'TTTTTkkkTTTTT'],
     { T: 'stone', t: 'stoneS', r: 'wrCape', k: 'gate' },
@@ -871,6 +886,652 @@ const events: Theme['events'] = {
   ),
 }
 
+// ---------------------------------------------------------------------------
+// Actions: the buttons under the scene. You are the battle menu's cursor, a
+// pointing glove: beside the party it points left at the hero; from the top of
+// the scene it points down at the goblin or the moogle. Each press plays one of
+// the tier's takes; the target's patience wears down with repeated presses.
+// ---------------------------------------------------------------------------
+
+// Who is who, for the rests: the hero (and what he casts) is `hero`, the monster `goblin`, the moogle `moogle`.
+const pc = (pose: string, x = 0, y = 0, swap?: Record<string, string>): Actor => ({ ...hero(pose, x, y, swap), gone: 'hero' })
+/** The hero turned around to face you (he stands facing the goblin). */
+const facing = (pose: string, x = 0, swap?: Record<string, string>, opts: Partial<Actor> = {}): Actor => ({ ...pc(pose, x, 0, swap), flip: true, ...opts })
+const heroOf = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'hero' }))
+const drops: Actor[] = heroOf(sweat)
+/** The goblin (or another sprite in its place), `dx`/`dy` from its spot. Scenery: a hop above the hero's top stays put. */
+const foe = (sprite = 'goblin', dx = 0, dy = 0, opts: Partial<Actor> = {}): Actor => at(sprite, GOB.x + dx, GOB.y + dy, { fixed: true, gone: 'goblin', ...opts })
+const WHITE_EYES = { gbEye: 'white' }
+const NO_KNIFE = { knife: 'gbSkin' }
+const BERSERK = { gbSkin: 'wrCape', gbSkinS: 'wrCapeS' }
+/** A take that is only picked while these are present. */
+const needing = (needs: string[], anim: Animation): Animation => ({ ...anim, needs })
+/** A reaction: one-shot, every frame held twice as long as written (a line stays about a second at 6 fps). */
+const take = (...frames: Frame[]): Animation => once(...frames.map(f => ({ ...f, hold: 2 * Math.max(1, f.hold ?? 1) })))
+/** The same caption on every frame from `from` on. */
+const captioned = (caption: string, frames: Frame[], from = 2): Frame[] => frames.map((f, k) => (k >= from ? { ...f, caption } : f))
+/** Blue windows on the top rows, whose line it is: the hero's over the party, the goblin's at the left, the moogle's over the party. */
+const heroWin = (text: string, second = false): SceneText => ({ ...win(text, MID, second ? TOP + 2 : TOP), gone: 'hero' })
+const foeWin = (text: string, second = false): SceneText => ({ ...win(text, LEFT, second ? TOP + 2 : TOP), gone: 'goblin' })
+const mogWin = (text: string, second = false): SceneText => ({ ...win(text, MID, second ? TOP + 2 : TOP), gone: 'moogle' })
+/** A damage number over the hero's head (it rises with a taller job). */
+const pop = (text: string, y: number): SceneText => ({ text, x: 6, y, color: 'white', lift: true, gone: 'hero' })
+/** The goblin's noise, beside its hood. */
+const gobSay = (text: string, y = -2): SceneText => ({ text, x: -10, y, color: 'white', gone: 'goblin' })
+const MISS: SceneText = { text: 'Miss!', x: -6, y: -2, color: 'white' }
+
+// 1. Poke the hero. The cursor blinks in beside the party (the menu's cursor does not slide) and
+// pokes him in the back, at body height: it never rises with a taller job.
+const CUR = { hover: 16, poke: 14, y: 2 }
+const cursor = (x: number, opts: Partial<Actor> = {}): Actor => at('cursor', x, CUR.y, opts)
+/** The hero (or what is left of him), the goblin, more, and the cursor at `x` (null: gone). */
+const heroScene = (x: number | null, who: Actor[] = [pc('stand')], more: Actor[] = [], monster: Actor = foe()): Actor[] => [
+  ...who,
+  monster,
+  ...more,
+  ...(x === null ? [] : [cursor(x, x >= 18 ? { offstage: true } : {})]),
+]
+/** Blink in, blink, poke: the hero flashes white. */
+const hStart = (who: Actor[] = [pc('stand')], hit: Actor[] = [pc('stand', 0, 0, HERO_WHITE)]): Frame[] => [
+  { actors: heroScene(CUR.hover, who), hold: 1 },
+  { actors: heroScene(null, who), hold: 1 },
+  { actors: heroScene(CUR.poke, hit), hold: 1 },
+]
+/** A number beside the cursor: what you took. */
+const you = (text: string, y = -2): SceneText => ({ text, x: 18, y, color: 'white' })
+const spellFx = (actor: Actor): Actor => ({ ...actor, gone: 'hero' })
+/** The goblin left alone, looking at where the party was. */
+const GOBLIN_PUZZLED: Frame[] = [
+  { actors: [foe('goblin2')], texts: [gobSay('?')], hold: 2 },
+  { actors: [foe()], texts: [gobSay('...')], hold: 2 },
+]
+const pokeHero: ThemeAction = {
+  id: 'hero',
+  label: 'POKE HERO',
+  restLabel: '(HERO FLED)',
+  gone: ['hero'],
+  needs: ['hero'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked the hero. 1 damage. He turned around.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover), texts: [pop('1', -2)], hold: 1 },
+          { actors: heroScene(CUR.hover, [facing('stand')]), texts: [pop('1', -4), heroWin(' Hm? ')], hold: 3 },
+          { actors: heroScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked. The hero checks his HP. 9899. Rude.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover), texts: [pop('1', -2)], hold: 1 },
+          { actors: heroScene(CUR.hover, [facing('stand')]), texts: [heroWin(' HP 9899/9900 ')], hold: 3 },
+          { actors: heroScene(null, [facing('stand')]), texts: [heroWin(' ...fine. ')], hold: 2 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      ),
+      needing(['goblin'], take(
+        ...captioned('Poked. The hero blames the goblin.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover), hold: 1 },
+          { actors: heroScene(CUR.hover, [pc('attack')], [], foe('goblin2', 0, -2)), texts: [gobSay('?!')], hold: 2 },
+          { actors: heroScene(null, [pc('attack')], [], foe('goblin2')), texts: [gobSay('?!')], hold: 2 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      )),
+      take(
+        ...captioned('Poked mid-chant. The spell fizzled.', [
+          { actors: heroScene(CUR.hover, [spellFx(circleAt(1)), pc('itemGet')]), texts: [heroWin(' Chanting.. ')], hold: 1 },
+          { actors: heroScene(null, [spellFx(circleAt(2)), pc('itemGet')]), texts: [heroWin(' Chanting.. ')], hold: 1 },
+          { actors: heroScene(CUR.poke, [spellFx(circleAt(1)), pc('itemGet', 0, 0, HERO_WHITE)]), hold: 1 },
+          { actors: heroScene(CUR.hover, [pc('stand'), spellFx(at('sparkle', -8, 6))]), texts: [heroWin(' Fizzle. ')], hold: 2 },
+          { actors: heroScene(CUR.hover, [facing('stand')]), texts: [heroWin(' Fizzle. ')], hold: 2 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked. The hero pretends not to notice.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [pc('stand'), ...drops]), hold: 2 },
+          { actors: heroScene(CUR.poke, [pc('stand', 0, 0, HERO_WHITE), ...drops]), hold: 1 },
+          { actors: heroScene(CUR.hover, [pc('stand'), ...drops]), texts: [heroWin(' ... ')], hold: 3 },
+          { actors: heroScene(null, [pc('stand'), ...drops]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked the hero. Status: Mildly Annoyed.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [facing('stand')]), texts: [heroWin(' Status: '), heroWin(' Annoyed ', true)], hold: 3 },
+          { actors: heroScene(null, [facing('stand')]), texts: [heroWin(' Status: '), heroWin(' Annoyed ', true)], hold: 2 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The hero pokes back. You take 1 damage.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [facing('stand')]), hold: 1 },
+          { actors: heroScene(CUR.hover, [facing('attack')]), texts: [you('1')], hold: 1 },
+          { actors: heroScene(18, [facing('attack')]), texts: [you('1', -4)], hold: 1 },
+          { actors: heroScene(null, [facing('stand')]), texts: [heroWin(' Hmph. ')], hold: 3 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The hero casts Libra on you. Weak vs work.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [facing('attack')], [spellFx(at('scanYou', 14, 0))]), texts: [heroWin(' Libra ')], hold: 2 },
+          { actors: heroScene(CUR.hover, [facing('attack')], [spellFx(at('scanYou', 14, 0))]), texts: [heroWin(' Cursor  Lv 1 '), heroWin(' Weak vs Work ', true)], hold: 3 },
+          { actors: heroScene(null, [facing('stand')]), texts: [heroWin(' Cursor  Lv 1 '), heroWin(' Weak vs Work ', true)], hold: 2 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked the air. Miss! The hero sidestepped.', [
+          { actors: heroScene(CUR.hover), hold: 1 },
+          { actors: heroScene(null, [pc('walk', -3)]), hold: 1 },
+          { actors: heroScene(CUR.poke, [pc('stand', -3)]), texts: [{ ...MISS, x: 13 }], hold: 2 },
+          { actors: heroScene(CUR.hover, [pc('stand', -3)]), texts: [{ ...MISS, x: 13, y: -4 }], hold: 2 },
+          { actors: heroScene(null, [pc('walk', -1)]), hold: 1 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The hero sighs. He is overleveled for this.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [pc('stand'), ...drops]), texts: [heroWin(' ...sigh. ')], hold: 3 },
+          { actors: heroScene(null, [pc('stand'), ...drops]), texts: [heroWin(' ...sigh. ')], hold: 2 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      ),
+      needing(['goblin'], take(
+        ...captioned('The hero would like to finish this battle.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [facing('stand')]), texts: [heroWin(' Not now. ')], hold: 2 },
+          { actors: heroScene(CUR.hover), texts: [heroWin(' Battle. ')], hold: 2 },
+          { actors: heroScene(null, [pc('attack'), spellFx(inHand())]), texts: [heroWin(' Battle. ')], hold: 2 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      )),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The hero casts Sleep. On you. Zzz.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [spellFx(circleAt(1)), facing('attack')]), texts: [heroWin(' Sleep ')], hold: 2 },
+          { actors: heroScene(CUR.hover, [spellFx(circleAt(2)), facing('attack')]), texts: [heroWin(' Sleep '), you('z')], hold: 1 },
+          { actors: [facing('attack'), foe(), at('cursor', CUR.hover, CUR.y + 2)], texts: [you('z'), you('Z', -4)], hold: 2 },
+          { actors: [facing('stand'), foe(), at('cursor', CUR.hover, CUR.y + 4)], texts: [you('z'), you('Z', -4), { ...you('Z', -6), x: 20 }], hold: 2 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The hero casts a spell. At you. 9999 damage.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [facing('attack'), spellFx(weapon(8, -1, { fixed: true }))]), hold: 1 },
+          { actors: heroScene(CUR.hover, [facing('attack'), spellFx(weapon(14, -1, { fixed: true }))]), hold: 1 },
+          { actors: [facing('attack'), foe(), spellFx(at('boom1', 15, 0))], hold: 1 },
+          { actors: [facing('attack'), foe(), spellFx(at('boom2', 15, 0))], texts: [you('9999')], hold: 1 },
+          { actors: [facing('stand'), foe()], texts: [you('9999', -4)], hold: 2 },
+          { actors: heroScene(null), texts: [heroWin(' Next. ')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The hero eyes the Run command. Not yet.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [facing('stand')]), texts: [heroWin(' >Fight '), heroWin('  Run   ', true)], hold: 2 },
+          { actors: heroScene(CUR.hover, [facing('stand')]), texts: [heroWin('  Fight '), heroWin(' >Run   ', true)], hold: 3 },
+          { actors: heroScene(null, [facing('stand')]), texts: [heroWin(' >Fight '), heroWin('  Run   ', true)], hold: 2 },
+          { actors: heroScene(null), hold: 1 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The hero ran away. The goblin is confused.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [facing('stand')]), texts: [heroWin('  Fight '), heroWin(' >Run   ', true)], hold: 2 },
+          { actors: [facing('walk', 6), foe()], texts: [heroWin(' Run! ')], hold: 1 },
+          { actors: [facing('walk', 14, undefined, { offstage: true }), foe()], texts: [heroWin(' Run! ')], hold: 1 },
+          { actors: [facing('walk', 24, undefined, { offstage: true }), foe()], hold: 1 },
+          { actors: [foe()], texts: [win(' Fled! ', MID, TOP)], hold: 2 },
+          ...GOBLIN_PUZZLED,
+        ]),
+      ),
+      take(
+        ...captioned('The hero cast Teleport. Out of this battle.', [
+          ...hStart(),
+          { actors: heroScene(CUR.hover, [facing('stand')]), texts: [heroWin(' ...Teleport. ')], hold: 2 },
+          { actors: heroScene(CUR.hover, [spellFx(circleAt(1)), pc('itemGet')]), texts: [heroWin(' Teleport ')], hold: 1 },
+          { actors: heroScene(CUR.hover, [spellFx(circleAt(2)), pc('itemGet', 0, 0, HERO_WHITE), spellFx(at('sparkle', -2, 4)), spellFx(at('sparkle', 13, 8))]), hold: 1 },
+          { actors: heroScene(CUR.hover, [spellFx(circleAt(1)), spellFx(at('sparkle', 0, 2)), spellFx(at('sparkle', 11, 4)), spellFx(at('sparkle', 5, 10))]), hold: 1 },
+          { actors: heroScene(CUR.hover, []), texts: [win(' ... ', MID, TOP)], hold: 2 },
+          ...GOBLIN_PUZZLED,
+        ]),
+      ),
+    ],
+  },
+  // The hero's rest: the goblin alone on the field, with nobody to fight.
+  rest: loop(
+    { actors: [foe()], hold: 6 },
+    { actors: [foe('goblin2')], texts: [gobSay('...')], hold: 6 },
+    { actors: [foe()], texts: [win(' No target. ', LEFT, TOP)], hold: 6 },
+    { actors: [foe('goblin', 0, 0, { flip: true })], texts: [gobSay('?')], hold: 6 },
+  ),
+}
+
+// 2. Provoke the goblin. The glove points down at it from the top of the scene
+// (scenery: it does not rise with the hero's job).
+const G_X = -19
+const G_ENTER = -22
+/** Flinched up to the top edge: clear of the goblin's window rows (a window drawn over the cuff looked wrong). */
+const G_AWAY = -28
+const G_HOVER = -10
+const G_POKE = -8
+/** The glove pointing down, from the top of the scene. */
+const finger = (x: number, y: number, opts: Partial<Actor> = {}): Actor => at('cursor', x, y, { turn: 'ccw', fixed: true, ...(y <= -20 ? { offstage: true } : {}), ...opts })
+/** The hero watching, the goblin (or what is in its place), more, and the glove at `y` (null: gone). */
+const gobScene = (y: number | null, foes: Actor[] = [foe()], more: Actor[] = [], who: Actor[] = [pc('stand')]): Actor[] => [
+  ...who,
+  ...foes,
+  ...more,
+  ...(y === null ? [] : [finger(G_X, y)]),
+]
+const gStart = (): Frame[] => [
+  { actors: gobScene(G_ENTER), hold: 1 },
+  { actors: gobScene(G_HOVER), hold: 1 },
+  { actors: gobScene(G_POKE, [foe('goblin', 0, 0, { swap: GOBLIN_HIT })]), hold: 1 },
+]
+const dagger = (x: number, y: number, down = false): Actor => at('dagger', x, y, { fixed: true, gone: 'goblin', flipY: down })
+const BACK_GOBLIN = (swap?: Record<string, string>): Actor => foe('goblin', 3, -10, swap ? { swap } : {})
+const BOSS = (swap?: Record<string, string>): Actor => at('behemoth', -22, -2, { fixed: true, gone: 'goblin', ...(swap ? { swap } : {}) })
+const glintAt = (x: number, y: number): Actor => at('sparkle', x, y, { fixed: true, gone: 'goblin' })
+const provokeGoblin: ThemeAction = {
+  id: 'goblin',
+  label: 'PROVOKE GOBLIN',
+  restLabel: '(NO GOBLIN)',
+  gone: ['goblin'],
+  needs: ['goblin'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Provoked the goblin. It hops. Angrily.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2', 0, -2)]), texts: [gobSay('!')], hold: 1 },
+          { actors: gobScene(G_HOVER), hold: 1 },
+          { actors: gobScene(G_HOVER, [foe('goblin2', 0, -2)]), texts: [gobSay('!!')], hold: 1 },
+          { actors: gobScene(null), texts: [gobSay('Grr.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Provoked. The goblin is Lv 3. Unimpressed.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER), texts: [foeWin(' Goblin  Lv 3 '), foeWin(' Unimpressed. ', true)], hold: 3 },
+          { actors: gobScene(null), texts: [foeWin(' Goblin  Lv 3 '), foeWin(' Unimpressed. ', true)], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Provoked. The goblin sharpens its knife.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2')]), hold: 1 },
+          { actors: gobScene(G_HOVER, [foe('goblin2'), glintAt(-11, 7)]), texts: [gobSay('...')], hold: 2 },
+          { actors: gobScene(G_HOVER, [foe('goblin2')]), hold: 1 },
+          { actors: gobScene(null, [foe('goblin2'), glintAt(-11, 7)]), texts: [gobSay('Heh.')], hold: 2 },
+          { actors: gobScene(null), hold: 1 },
+        ]),
+      ),
+      needing(['hero'], take(
+        ...captioned('The goblin checks: was that the hero? No.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER), texts: [gobSay('?')], hold: 1 },
+          { actors: gobScene(G_HOVER, [foe()], [], [pc('stand'), ...drops]), texts: [gobSay('?'), heroWin(' Not me. ')], hold: 3 },
+          { actors: gobScene(null, [foe()], [], [pc('stand'), ...drops]), texts: [heroWin(' Not me. ')], hold: 1 },
+          { actors: gobScene(null, [foe('goblin2')]), texts: [gobSay('Hm.')], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('Goblin Punch! It hits the air. 0 damage.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2')]), texts: [foeWin(' Goblin Punch! ')], hold: 2 },
+          { actors: gobScene(G_AWAY, [foe('goblin2', 3, -2)]), texts: [foeWin(' Goblin Punch! '), MISS], hold: 2 },
+          { actors: gobScene(null), texts: [gobSay('Grr.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The goblin plays dead. Nobody falls for it.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblinFade')]), hold: 2 },
+          { actors: gobScene(G_HOVER, [foe('goblinFade')], [], [pc('stand'), ...drops]), texts: [heroWin(' ... ')], hold: 2 },
+          { actors: gobScene(null, [foe()], [], [pc('stand'), ...drops]), texts: [gobSay('...')], hold: 2 },
+          { actors: gobScene(null, [foe('goblin2')]), texts: [gobSay('Grr.')], hold: 1 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('Goblin Punch! You take 1 damage.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2')]), texts: [foeWin(' Goblin Punch! ')], hold: 1 },
+          { actors: gobScene(G_HOVER - 4, [foe('goblin2', 0, -2)]), texts: [foeWin(' Goblin Punch! '), gobSay('1')], hold: 1 },
+          { actors: gobScene(G_AWAY, [foe('goblin2', 0, -2)]), texts: [foeWin(' Goblin Punch! '), gobSay('1')], hold: 1 },
+          { actors: gobScene(null), texts: [gobSay('Heh.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The goblin throws its knife. At the cursor.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2')]), hold: 1 },
+          { actors: gobScene(G_HOVER, [foe('goblin', 0, 0, { swap: NO_KNIFE })], [dagger(-11, -4)]), hold: 1 },
+          { actors: gobScene(G_ENTER, [foe('goblin', 0, 0, { swap: NO_KNIFE })], [dagger(-13, -13)]), texts: [gobSay('!')], hold: 1 },
+          { actors: gobScene(null, [foe('goblin', 0, 0, { swap: NO_KNIFE })], [dagger(-9, -2, true)]), hold: 1 },
+          { actors: gobScene(null, [foe('goblin', 0, 0, { swap: NO_KNIFE })], [dagger(-6, 11, true)]), texts: [gobSay('...')], hold: 2 },
+          { actors: gobScene(null, [foe('goblin2')]), texts: [gobSay('Hmph.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The goblin calls for backup. More goblin.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2')]), texts: [gobSay('!')], hold: 2 },
+          { actors: gobScene(G_ENTER, [BACK_GOBLIN(GOBLIN_HIT), foe()]), hold: 1 },
+          // The growl goes left of the back-row goblin, over the first one's hood.
+          { actors: gobScene(null, [BACK_GOBLIN(), foe()]), texts: [{ ...gobSay('Grr.'), x: -21 }], hold: 1 },
+          { actors: gobScene(null, [BACK_GOBLIN(), foe('goblin2')]), texts: [{ ...gobSay('Grr.'), x: -21 }], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The goblin stole 5 Gil. From you, somehow.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2', 0, -2)]), texts: [foeWin(' Steal! ')], hold: 1 },
+          { actors: gobScene(G_AWAY, [foe('goblin2')], [at('gil', -8, -6, { fixed: true, gone: 'goblin' })]), texts: [foeWin(' Steal! ')], hold: 1 },
+          { actors: gobScene(null, [foe()], [at('gil', -7, 8, { fixed: true, gone: 'goblin' })]), texts: [foeWin(' Got 5 Gil! ')], hold: 3 },
+          { actors: gobScene(null, [foe('goblin2')]), texts: [gobSay('Heh.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The goblin glares. Its eyes do the thing.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin', 0, 0, { swap: WHITE_EYES })]), hold: 1 },
+          { actors: gobScene(G_HOVER), hold: 1 },
+          { actors: gobScene(G_HOVER, [foe('goblin', 0, 0, { swap: WHITE_EYES })]), texts: [gobSay('...')], hold: 1 },
+          { actors: gobScene(null), texts: [gobSay('...')], hold: 3 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      needing(['hero'], take(
+        ...captioned('Provoked, the goblin hits the hero. 12 damage.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2', 4)]), hold: 1 },
+          { actors: gobScene(G_HOVER, [foe('goblin2', 8)], [], [pc('stand', 0, 0, HERO_WHITE)]), hold: 1 },
+          { actors: gobScene(G_ENTER, [foe('goblin2', 8)]), texts: [pop('12', -2)], hold: 1 },
+          { actors: gobScene(null, [foe('goblin2', 4)], [], [pc('stand'), ...drops]), texts: [pop('12', -4)], hold: 1 },
+          { actors: gobScene(null, [foe()], [], [pc('stand'), ...drops]), texts: [heroWin(' Why me. ')], hold: 3 },
+        ]),
+      )),
+      take(
+        ...captioned('The goblin goes Berserk. Punches everything.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin', 0, 0, { swap: BERSERK })]), texts: [foeWin(' Berserk! ')], hold: 1 },
+          { actors: gobScene(G_AWAY, [foe('goblin2', 2, -2, { swap: BERSERK })], [glintAt(-9, -4)]), texts: [foeWin(' Berserk! ')], hold: 1 },
+          { actors: gobScene(null, [foe('goblin2', -1, 0, { swap: BERSERK })], [at('boom1', -21, -8, { fixed: true, gone: 'goblin' })]), texts: [foeWin(' Berserk! ')], hold: 1 },
+          { actors: gobScene(null, [foe('goblin', 0, 0, { swap: BERSERK })], [at('boom2', -12, 2, { fixed: true, gone: 'goblin' })]), hold: 1 },
+          { actors: gobScene(null, [foe()], [], [pc('stand'), ...drops]), texts: [gobSay('...')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The goblin called its boss. Its boss came.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2')]), texts: [gobSay('!!')], hold: 2 },
+          { actors: gobScene(G_ENTER, [BOSS(BOSS_RED), foe()]), hold: 1 },
+          { actors: gobScene(null, [BOSS(), foe()]), hold: 1 },
+          { actors: gobScene(null, [BOSS(BOSS_RED), foe()]), hold: 1 },
+          { actors: gobScene(null, [BOSS(), foe()], [], [pc('stand'), ...drops]), texts: [foeWin(' Behemoth ')], hold: 3 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The goblin ran away. The battle is over.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2')]), texts: [gobSay('!!')], hold: 2 },
+          { actors: gobScene(null, [foe('goblin', -6, 0, { offstage: true })]), texts: [foeWin(' Goblin ran away! ')], hold: 1 },
+          { actors: gobScene(null, [foe('goblin2', -14, 0, { offstage: true })]), texts: [foeWin(' Goblin ran away! ')], hold: 1 },
+          { actors: gobScene(null, []), texts: [win(' Goblin ran away! ', LEFT, TOP)], hold: 2 },
+          { actors: gobScene(null, [], [], [facing('stand')]), texts: [heroWin(' ...Happy? ')], hold: 3 },
+        ]),
+      ),
+      needing(['hero'], take(
+        ...captioned('The goblin lunged at you. The hero ended it.', [
+          ...gStart(),
+          { actors: gobScene(G_HOVER, [foe('goblin2', 0, -2)]), texts: [gobSay('!!')], hold: 1 },
+          { actors: gobScene(G_ENTER, [foe('goblin2', 0, -4)]), hold: 1 },
+          { actors: gobScene(null, [foe()], [spellFx(inHand())], [pc('attack')]), hold: 1 },
+          { actors: gobScene(null, [foe()], [spellFx(inFlight())], [pc('attack')]), hold: 1 },
+          { actors: gobScene(null, [foe('goblin', 0, 0, { swap: GOBLIN_HIT })], [spellFx(boom(1))]), hold: 1 },
+          { actors: gobScene(null, [foe('goblinFade')], [spellFx(boom(2))]), texts: [{ ...dmg('9999', 0), gone: 'hero' }], hold: 1 },
+          { actors: gobScene(null, []), texts: [{ ...dmg('9999', -2), gone: 'hero' }], hold: 1 },
+          { actors: gobScene(null, [], [], [facing('stand')]), texts: [heroWin(' There. ')], hold: 3 },
+        ]),
+      )),
+    ],
+  },
+  // The goblin's rest: the hero alone, nothing to fight.
+  rest: loop(
+    { actors: [pc('stand')], hold: 6 },
+    { actors: [pc('walk')], hold: 6 },
+    { actors: [pc('stand')], texts: [win(' No enemies. ', MID, TOP)], hold: 6 },
+    { actors: [facing('stand')], texts: [heroWin(' Happy now? ')], hold: 6 },
+    { actors: [pc('stand')], hold: 6 },
+  ),
+}
+
+// 3. Pet the moogle. A moogle has wandered onto the field behind the party; the
+// glove strokes its pom-pom from the top of the scene.
+const MOG = { x: 16, y: 4 }
+const M_X = 17
+const M_ENTER = -22
+const M_HOVER = -8
+const M_POKE = -6
+const mog = (sprite = 'moogle', dy = 0, opts: Partial<Actor> = {}): Actor => at(sprite, MOG.x, MOG.y + dy, { fixed: true, gone: 'moogle', ...opts })
+/** The hero and the goblin as usual, the moogle (or what is in its place), more, and the glove at `y` (null: gone). */
+const mogScene = (y: number | null, mogs: Actor[] = [mog()], more: Actor[] = [], who: Actor[] = [pc('stand')]): Actor[] => [
+  ...who,
+  foe(),
+  ...mogs,
+  ...more,
+  ...(y === null ? [] : [finger(M_X, y)]),
+]
+const mStart = (): Frame[] => [
+  { actors: mogScene(M_ENTER), hold: 1 },
+  { actors: mogScene(M_HOVER), hold: 1 },
+  { actors: mogScene(M_POKE), hold: 1 },
+]
+/** The moogle's line, over its pom-pom (where the glove is not: only while it hovers or is gone). */
+const kupo = (text: string, y = 2, color = 'white'): SceneText => ({ text, x: 16, y, color, gone: 'moogle' })
+/** The letter the moogle holds up, and the one it leaves on the ground. */
+const LETTER_UP = at('letter', 18, -2, { fixed: true, gone: 'moogle' })
+const LETTER_GROUND = at('letter', 18, 12, { fixed: true })
+const petMoogle: ThemeAction = {
+  id: 'moogle',
+  label: 'PET MOOGLE',
+  restLabel: '(NO MOOGLE)',
+  gone: ['moogle'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Petted the moogle. It approves. Kupo.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('Kupo!')], hold: 1 },
+          { actors: mogScene(M_POKE, [mog('moogle2')]), hold: 1 },
+          { actors: mogScene(M_HOVER, [mog('moogle2')]), texts: [kupo('Kupo!')], hold: 2 },
+          { actors: mogScene(null), texts: [kupo('<3', 2, 'mogPom')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Petted the moogle. It tries to sell a Potion.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('Kupo?')], hold: 1 },
+          { actors: mogScene(null), texts: [mogWin(' Buy Potion? 50G ')], hold: 2 },
+          { actors: mogScene(null), texts: [mogWin(' Buy Potion? 50G '), mogWin(' Yes  > No ', true)], hold: 3 },
+          { actors: mogScene(null, [mog('moogle2')]), texts: [kupo('Kupo...')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The moogle asks if you want to save. Kupo?', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('Kupo?')], hold: 1 },
+          { actors: mogScene(null), texts: [mogWin(' Save game? '), mogWin(' Yes  > No ', true)], hold: 3 },
+          { actors: mogScene(null), texts: [mogWin(' Save game? '), mogWin(' > Yes  No ', true)], hold: 2 },
+          { actors: mogScene(null, [mog('moogle2')]), texts: [mogWin(' Saved. Kupo! ')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Petted. The pom-pom bobs. Kupo, kupo.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER, [mog('moogle2')]), hold: 1 },
+          { actors: mogScene(M_POKE), hold: 1 },
+          { actors: mogScene(M_HOVER, [mog('moogle2')]), texts: [kupo('Kupo,')], hold: 1 },
+          { actors: mogScene(M_POKE), hold: 1 },
+          { actors: mogScene(M_HOVER, [mog('moogle2')]), texts: [kupo('kupo.')], hold: 2 },
+          { actors: mogScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The moogle has mail for you. Kupo. Bills.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('Kupo!')], hold: 1 },
+          { actors: mogScene(null, [mog(), LETTER_UP]), texts: [kupo('Mail!')], hold: 2 },
+          { actors: mogScene(null, [mog(), LETTER_UP]), texts: [kupo('Bills.')], hold: 3 },
+          { actors: mogScene(null, [mog('moogle2')]), texts: [kupo('Kupo.')], hold: 1 },
+        ]),
+      ),
+      needing(['hero'], take(
+        ...captioned('Petted the moogle. The hero feels left out.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('Kupo!')], hold: 1 },
+          { actors: mogScene(M_POKE, [mog('moogle2')], [], [facing('stand')]), hold: 1 },
+          { actors: mogScene(M_HOVER, [mog('moogle2')], [], [facing('stand'), ...drops]), texts: [heroWin(' ... '), kupo('Kupo!')], hold: 3 },
+          { actors: mogScene(null, [mog()], [], [facing('stand'), ...drops]), texts: [heroWin(' Nobody pets me. ')], hold: 2 },
+        ]),
+      )),
+    ],
+    irritated: [
+      take(
+        ...captioned('The moogle bats the hand away. Kupo?!', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER, [mog('moogle2', -2)]), hold: 1 },
+          { actors: mogScene(M_HOVER - 6, [mog('moogle2', -4)]), texts: [kupo('Kupo?!', -2)], hold: 1 },
+          { actors: mogScene(M_ENTER), texts: [kupo('Kupo?!')], hold: 2 },
+          { actors: mogScene(null, [mog('moogle2')]), texts: [kupo('Hmph.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The moogle flutters out of reach. Kupo.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER, [mog('moogle2', -3)]), hold: 1 },
+          { actors: mogScene(-16, [mog('moogle2', -6)]), hold: 2 },
+          { actors: mogScene(M_ENTER, [mog('moogle', -8)]), hold: 1 },
+          { actors: mogScene(null, [mog('moogle2', -8)]), hold: 1 },
+          { actors: mogScene(null, [mog('moogle2', -4)]), hold: 1 },
+          { actors: mogScene(null), texts: [kupo('Kupo.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The moogle closes the shop. No Potions today.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('Kupo.')], hold: 1 },
+          { actors: mogScene(null), texts: [mogWin(' Shop closed. ')], hold: 3 },
+          { actors: mogScene(null, [mog('moogle2')]), texts: [mogWin(' Shop closed. '), kupo('Kupo.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The moogle files a complaint. Via Mognet.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('Kupo...')], hold: 1 },
+          { actors: mogScene(null, [mog(), LETTER_UP]), texts: [mogWin(' Dear Mog HQ, ')], hold: 2 },
+          { actors: mogScene(null, [mog('moogle2'), LETTER_UP]), texts: [mogWin(' Dear Mog HQ, '), mogWin(' Kupo. KUPO. ', true)], hold: 3 },
+          { actors: mogScene(null, [mog(), at('letter', 18, -12, { fixed: true, gone: 'moogle' })]), hold: 1 },
+          { actors: mogScene(null, [mog(), at('letter', 18, -22, { fixed: true, gone: 'moogle', offstage: true })]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The moogle stares you down. ...Kupo.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), hold: 3 },
+          { actors: mogScene(M_HOVER), texts: [kupo('...')], hold: 2 },
+          { actors: mogScene(null), texts: [kupo('Kupo.')], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      needing(['hero'], take(
+        ...captioned('The hero steps in. Leave the moogle alone.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('Kupo!!')], hold: 1 },
+          { actors: mogScene(M_HOVER, [mog()], [], [facing('stand')]), hold: 1 },
+          { actors: mogScene(M_HOVER, [mog()], [], [facing('attack')]), texts: [heroWin(' Leave it alone. ')], hold: 2 },
+          { actors: mogScene(M_ENTER, [mog()], [], [facing('attack')]), texts: [heroWin(' Leave it alone. ')], hold: 1 },
+          { actors: mogScene(null, [mog('moogle2')], [], [facing('stand')]), texts: [kupo('Kupo.')], hold: 2 },
+          { actors: mogScene(null), hold: 1 },
+        ]),
+      )),
+      take(
+        ...captioned('The moogle headbutts the cursor. 1 damage.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER, [mog('moogle2', -2)]), hold: 1 },
+          { actors: mogScene(-12, [mog('moogle2', -6)]), texts: [{ text: '1', x: 15, y: -8, color: 'white' }], hold: 1 },
+          { actors: mogScene(M_ENTER, [mog('moogle2', -4)]), texts: [{ text: '1', x: 15, y: -10, color: 'white' }], hold: 1 },
+          { actors: mogScene(null), texts: [kupo('KUPO.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The moogle bills you for the petting. 500 Gil.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('Kupo.')], hold: 1 },
+          { actors: mogScene(null), texts: [mogWin(' Petting fee: '), mogWin(' 500 Gil ', true)], hold: 3 },
+          { actors: mogScene(null, [mog('moogle2')], [at('gil', 18, -2, { fixed: true, gone: 'moogle' }), at('gil', 21, -6, { fixed: true, gone: 'moogle' })]), texts: [mogWin(' -500 Gil ')], hold: 2 },
+          { actors: mogScene(null), texts: [kupo('Kupo!')], hold: 2 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The moogle flew off. Kupo!! Shop closed.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER, [mog('moogle2', -2)]), hold: 1 },
+          { actors: mogScene(M_HOVER, [mog('moogle2')]), texts: [kupo('KUPO!!')], hold: 2 },
+          { actors: mogScene(M_ENTER, [mog('moogle2', -8), at('letter', 18, 2, { fixed: true })]), hold: 1 },
+          { actors: mogScene(null, [mog('moogle', -16), at('letter', 18, 8, { fixed: true })]), hold: 1 },
+          { actors: mogScene(null, [mog('moogle2', -28, { offstage: true }), LETTER_GROUND]), hold: 1 },
+          { actors: mogScene(null, [LETTER_GROUND]), texts: [win(' Shop closed. ', MID, TOP)], hold: 2 },
+          { actors: mogScene(null, [LETTER_GROUND], [], [facing('stand')]), texts: [heroWin(' Nice going. ')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The moogle left a note. It just says Kupo.', [
+          ...mStart(),
+          { actors: mogScene(M_HOVER), texts: [kupo('...')], hold: 2 },
+          { actors: mogScene(null, [mog(), LETTER_UP]), hold: 1 },
+          { actors: mogScene(null, [mog('moogle2', -8), LETTER_GROUND]), hold: 1 },
+          { actors: mogScene(null, [mog('moogle', -18), LETTER_GROUND]), hold: 1 },
+          { actors: mogScene(null, [mog('moogle2', -30, { offstage: true }), LETTER_GROUND]), hold: 1 },
+          { actors: mogScene(null, [LETTER_GROUND]), texts: [win(' It says: Kupo. ', MID, TOP)], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The moogle's rest: the battle goes on; its letter lies where it stood.
+  rest: loop(
+    { actors: [pc('stand'), foe(), LETTER_GROUND], hold: 6 },
+    { actors: [pc('walk'), foe('goblin2'), LETTER_GROUND], hold: 6 },
+    { actors: [facing('stand'), foe(), LETTER_GROUND], texts: [{ text: 'kupo...', x: 16, y: 2, color: 'winLabel' }], hold: 6 },
+    { actors: [pc('stand'), foe('goblin2'), LETTER_GROUND], hold: 6 },
+  ),
+}
+
+const actions: ThemeAction[] = [pokeHero, provokeGoblin, petMoogle]
+
 const poses = (p: string) => ({ stand: `${p}Stand`, walk: `${p}Walk`, attack: `${p}Attack`, itemGet: `${p}ItemGet`, sleep: `${p}Sleep` })
 
 export const fantasy: Theme = {
@@ -907,6 +1568,7 @@ export const fantasy: Theme = {
   cold,
   overkill,
   events,
+  actions,
   scene: {
     height: 40,
     anchor: { x: 22, y: 20 },

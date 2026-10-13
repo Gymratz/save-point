@@ -121,7 +121,8 @@ export function spritesUsed(pack: Theme): Set<string> {
   const names = new Set<string>()
   const spec = pack.scene
   if (!spec) return names
-  for (const anim of [...Object.values(pack.states ?? {}), ...Object.values(pack.events ?? {}), ...Object.values(pack.overkill ?? {}), ...Object.values(pack.cold ?? {})]) {
+  const reactions = (pack.actions ?? []).flatMap(a => [...Object.values(a.reactions).flat(), ...(a.rest ? [a.rest] : [])])
+  for (const anim of [...Object.values(pack.states ?? {}), ...Object.values(pack.events ?? {}), ...Object.values(pack.overkill ?? {}), ...Object.values(pack.cold ?? {}), ...reactions]) {
     for (const frames of [anim?.frames ?? [], ...(anim?.variants ?? [])]) for (const f of frames) for (const a of f.actors) if (!a.sprite.startsWith('@')) names.add(a.sprite)
   }
   Object.values(spec.hero).forEach(n => n && names.add(n))
@@ -182,6 +183,8 @@ function resolvePack(pack: Theme): ResolvedTheme {
   }
   if (pack.scene) {
     for (const n of spritesUsed({ ...pack, states, events })) if (!pack.sprites?.[n]) missing.push(`sprites.${n}`)
+    // An action needs a calm reaction at least (a higher tier without any plays the one below).
+    for (const a of pack.actions ?? []) if (!a.reactions?.calm?.length) missing.push(`actions.${a.id}.calm`)
   }
   return {
     theme: {

@@ -17,7 +17,8 @@
 // 80, the rest at 96.
 
 import { at, hero, loop, once, weapon } from './kit'
-import type { Actor, HeroTier, Sprite, Theme } from './types'
+import { quarter } from './pixel'
+import type { Actor, Animation, Frame, HeroTier, SceneText, Sprite, Theme, ThemeAction } from './types'
 
 const pixels = {
   // The hunter (the heavy whip hunter's colors; tiers swap these)
@@ -503,6 +504,11 @@ const WHEEL_B = [
 ]
 const BEAM_A = 'g...g.......g...g'
 const BEAM_B = '........g........'
+// Death's sickle, a crescent of steel with a glint; the hunter's throwing axe, head up, handle down.
+const SICKLE_ROWS = ['.SSS.', 'S...W', 'S....', 'S....', '.SSS.']
+const SICKLE_LEGEND = { S: 'steel', W: 'steelHi' }
+const AXE_ROWS = ['..SW.', '.wSSW', '.w.S.', '.w...', '.w...']
+const AXE_LEGEND = { w: 'wood', S: 'steel', W: 'steelHi' }
 
 const sprites: Theme['sprites'] = {
   // Hunters
@@ -787,6 +793,17 @@ const sprites: Theme['sprites'] = {
     '.R....R.',
   ], { i: 'iron', R: 'throneLo', y: 'y' }),
 
+  // Actions: your hand (pale, in a dark sleeve with a red cuff), the hand that answers from the coffin, Death's list and
+  // his sickles (spinning: the second a quarter round), the hunter's throwing axe (the same) and his holy water.
+  hand: S(['.oOOOOo.', 'RRRRRRRR', 'pPPPPPPp', 'pPpPpPpp', 'pPPPPPPp', 'pPpPpPpp', '.pPPPPp.', '..pppp..']),
+  claw: S(['h.h.h', 'hhhhh', 'HhhhH', '.hhh.', '.HhH.', '..h..', '..h..'], { h: 'mist', H: 'mistLo' }),
+  list: S(['pppppp', 'pkkkpp', 'pppppp', 'pkkkkp', 'pppppp', 'PPPPPP'], { p: 'paper', P: 'paperLo', k: 'ink' }),
+  sickle1: S(SICKLE_ROWS, SICKLE_LEGEND),
+  sickle2: quarter(S(SICKLE_ROWS, SICKLE_LEGEND), 'cw'),
+  axe1: S(AXE_ROWS, AXE_LEGEND),
+  axe2: quarter(S(AXE_ROWS, AXE_LEGEND), 'cw'),
+  vial: S(['.c.', 'ggg', 'gwg', 'ggg'], { c: 'woodLo', g: 'mist', w: 'sweat' }),
+
   // Status bar
   hp0: S(['e', 'e', 'e', 'e', 'e', 'e'], { e: 'hpEmpty' }),
   hp1: S(['e', 'e', 'e', 'f', 'f', 'f'], { e: 'hpEmpty', f: 'hpFull' }),
@@ -1005,6 +1022,671 @@ const events: Theme['events'] = {
   ),
 }
 
+// ---------------------------------------------------------------------------
+// Actions: the buttons under the scene. You are a pale hand in a dark sleeve
+// reaching down from the top of the scene with the hunter's own whip: held
+// level to flick him across the hair, or hanging from the fist as a knocker on
+// the coffin lid and on Death's skull. Each press plays one of the tier's
+// takes, picked at random; the target's patience wears down with repeated
+// presses (see `pressAction`).
+// ---------------------------------------------------------------------------
+
+/** A line in the scene, never lifted (lifted lines land where the hand is). */
+const say = (text: string, x: number, y: number, color = ink): SceneText => ({ text, x, y, color })
+/** A reaction: one-shot, every frame held twice as long as written (a line stays about a second at 6 fps). */
+const take = (...frames: Frame[]): Animation => once(...frames.map(f => ({ ...f, hold: 2 * Math.max(1, f.hold ?? 1) })))
+/** The same caption on every frame from `from` on. */
+const captioned = (caption: string, frames: Frame[], from = 2): Frame[] => frames.map((f, k) => (k >= from ? { ...f, caption } : f))
+/** A take that is only picked while these are present. */
+const needing = (needs: string[], anim: Animation): Animation => ({ ...anim, needs })
+/** A prop of a take: placed in the scene, not over the hero (the takes place things per tier themselves). */
+const prop = (sprite: string, x: number, y: number, opts: Partial<Actor> = {}): Actor => at(sprite, x, y, { fixed: true, ...opts })
+/** The same prop placed for the hunters and for the lord. */
+const pair = (sprite: string, s: [number, number], b: [number, number], opts: Partial<Actor> = {}): Actor[] => [small(prop(sprite, s[0], s[1], opts)), big(prop(sprite, b[0], b[1], opts))]
+// Who is who, for the rests: the hunter and what is his are `hunter`, the coffin and what comes out of it `coffin`. Death is never away.
+const hunter = (pose: string, x = 0, y = 0, swap?: Record<string, string>): Actor => ({ ...hero(pose, x, y, swap), gone: 'hunter' })
+const his = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'hunter' }))
+const hisLine = (t: SceneText): SceneText => ({ ...t, gone: 'hunter' })
+const ofCoffin = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'coffin' }))
+/** The hunter's sweat, with him `dx` along (the lord `dxBig`). */
+const sweatAt = (dx = 0, dxBig = dx): Actor[] => his([small(prop('sweat', 14 + dx, 0)), big(prop('sweat', 12 + dxBig, -10))])
+const SPARK = (x: number, y: number): Actor => prop('spark', x, y)
+// Your hand (8 by 8). It is scenery: it does not rise with the lord, the takes place it per tier.
+/** The empty fist. */
+const fist = (x: number, y: number, opts: Partial<Actor> = {}): Actor => prop('hand', x, y, opts)
+/** The fist holding the whip level, the lash to the left: the grip sits in the fist, the lash runs 4 and 5 under the hand's top from 12 left of it to its middle. */
+const flick = (x: number, y: number, opts: Partial<Actor> = {}): Actor[] => [weapon(x - 12, y + 2, { flip: true, fixed: true, ...opts }), fist(x, y, opts)]
+/** The fist with the whip hanging from it, the lash down: a knocker. The tip is 21 under the hand's top, in columns 3 and 4 of it; the star's head 6 wide from column 1. */
+const dangle = (x: number, y: number, opts: Partial<Actor> = {}): Actor[] => [weapon(x + 1, y + 6, { turn: 'cw', fixed: true, ...opts }), fist(x, y, opts)]
+type Reach = 'enter' | 'hover' | 'poke'
+const entering = (k: Reach, opts: Partial<Actor>): Partial<Actor> => ({ ...opts, ...(k === 'enter' ? { offstage: true } : {}) })
+
+// 1. Whip the hunter. The hand comes down beside his head holding his whip
+// level, the lash over his hair: a hunter's hair is at the anchor, the lord's
+// ten higher, so the hand is placed per tier. His lines go under the hand.
+const HX = 16
+const FLICK_Y: Record<Reach, [number, number]> = { enter: [-26, -36], hover: [-8, -18], poke: [-4, -14] }
+const flickAt = (k: Reach, opts: Partial<Actor> = {}): Actor[] => [
+  ...flick(HX, FLICK_Y[k][0], entering(k, { ...opts, tiers: SMALL })),
+  ...flick(HX, FLICK_Y[k][1], entering(k, { ...opts, tiers: BIG })),
+]
+const fistAt = (k: Reach): Actor[] => [small(fist(HX, FLICK_Y[k][0], entering(k, {}))), big(fist(HX, FLICK_Y[k][1], entering(k, {})))]
+/** The spark where the lash lands on the hair. */
+const BONK: Actor[] = pair('spark', [7, -7], [6, -17])
+/** The fist swung down to the strike spot with the whip hanging: where the hunter's own lash lands (six higher for the lord). */
+const dangleAtStrike = (dy = 0, opts: Partial<Actor> = {}): Actor[] => [...dangle(26, -10 + dy, { ...opts, tiers: SMALL }), ...dangle(26, -16 + dy, { ...opts, tiers: BIG })]
+const hScene = (k: Reach | null, who: Actor[], more: Actor[] = []): Actor[] => [...who, ...(k ? flickAt(k) : []), ...more]
+const hStart = (who: Actor[] = [hunter('stand')], texts?: SceneText[]): Frame[] => [
+  { actors: hScene('enter', who), texts, hold: 1 },
+  { actors: hScene('hover', who), texts, hold: 1 },
+  { actors: hScene('poke', who, BONK), texts, hold: 1 },
+]
+/** The hunter's line: under the hand, right of the lord, at most 18 characters. */
+const aside = (text: string, y = 4, color = ink): SceneText => hisLine(say(text, 18, y, color))
+const heart = (y: number): Actor[] => his([prop('heartDrop', 14, y)])
+/** The familiars let loose from the hunter's hand, under the fist. */
+const FAMILIARS_OUT: Actor[] = [prop('bat1', 18, 4), prop('famSword', 18, 8), prop('famFairy1', 19, 11)]
+const whipHunter: ThemeAction = {
+  id: 'hunter',
+  label: 'WHIP HUNTER',
+  restLabel: '(NO HUNTER)',
+  gone: ['hunter'],
+  needs: ['hunter'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Whipped the hunter. Not the hair, he says.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('stand')]), texts: [aside('!')], hold: 1 },
+          { actors: hScene('hover', [hunter('stand')]), texts: [aside('OW.')], hold: 2 },
+          { actors: hScene('hover', [hunter('stand'), ...sweatAt()]), texts: [aside('NOT THE HAIR.')], hold: 3 },
+          { actors: hScene(null, [hunter('stand'), ...sweatAt()]), texts: [aside('NOT THE HAIR.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter checks. Yes. That is his whip.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('itemGet')]), texts: [aside('HM.')], hold: 2 },
+          { actors: hScene('hover', [hunter('itemGet')]), texts: [aside('YES. MINE.')], hold: 3 },
+          { actors: hScene(null, [hunter('stand')]), texts: [aside('YES. MINE.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Whipped the sleeping hunter. He slept on.', [
+          ...hStart([hunter('sleep')], [aside('z')]),
+          { actors: hScene('hover', [hunter('sleep')]), texts: [aside('z')], hold: 2 },
+          { actors: hScene('poke', [hunter('sleep')], BONK), texts: [aside('zz')], hold: 2 },
+          { actors: hScene('hover', [hunter('sleep')]), texts: [aside('Zzz')], hold: 2 },
+          { actors: hScene(null, [hunter('sleep')]), texts: [aside('Zzz')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Whipped the hunter. A heart fell out. Huh.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('stand'), ...heart(5)]), hold: 1 },
+          { actors: hScene('hover', [hunter('stand'), ...heart(9)]), texts: [aside('?')], hold: 1 },
+          { actors: hScene('hover', [hunter('stand'), ...heart(12)]), texts: [aside('HUH.')], hold: 3 },
+          { actors: hScene(null, [hunter('itemGet'), ...heart(12)]), texts: [aside('HUH.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('A bat landed on your whip. It lives there now.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('stand')], pair('bat2', [8, -9], [8, -19])), hold: 1 },
+          { actors: hScene('hover', [hunter('stand')], pair('bat1', [8, -9], [8, -19])), texts: [aside('...')], hold: 2 },
+          { actors: hScene('hover', [hunter('stand')], pair('bat1', [8, -9], [8, -19])), texts: [aside('IT LIKES YOU.')], hold: 3 },
+          { actors: hScene('enter', [hunter('stand')], pair('bat2', [12, -16], [12, -20], { offstage: true })), texts: [aside('IT LIKES YOU.')], hold: 1 },
+          { actors: hScene(null, [hunter('stand')]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter caught the lash. Then gave it back.', [
+          ...hStart(),
+          { actors: hScene('poke', [hunter('itemGet')]), texts: [aside('GOT IT.')], hold: 2 },
+          { actors: hScene('poke', [hunter('itemGet')]), texts: [aside('...')], hold: 2 },
+          { actors: hScene('hover', [hunter('itemGet')]), texts: [aside('NO? OK.')], hold: 2 },
+          { actors: hScene(null, [hunter('stand')]), texts: [aside('NO? OK.')], hold: 2 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('What is this? A miserable little pile of pokes', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('stand')]), texts: [aside('WHAT IS THIS?')], hold: 3 },
+          { actors: hScene('hover', [hunter('stand'), ...sweatAt()]), texts: [aside('A MISERABLE LITTLE'), aside('PILE OF POKES.', 6)], hold: 4 },
+          { actors: hScene(null, [hunter('stand'), ...sweatAt()]), texts: [aside('A MISERABLE LITTLE'), aside('PILE OF POKES.', 6)], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter took his whip back. One job.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('itemGet')]), texts: [aside('MINE.')], hold: 2 },
+          { actors: [hunter('attack'), ...his([lash()]), ...fistAt('hover')], texts: [aside('MINE.')], hold: 2 },
+          { actors: [hunter('attack'), ...his([lash()]), ...fistAt('enter')], hold: 1 },
+          { actors: [hunter('stand')], texts: [aside('THANK YOU.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('A warning crack. The next one is for you.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('itemGet')]), hold: 1 },
+          { actors: hScene('hover', [hunter('attack'), ...his([lash()])], pair('spark', [STRIKE + 1, 6], [STRIKE + 1, 6 + LORD_UP])), hold: 2 },
+          { actors: hScene('enter', [hunter('attack'), ...his([lash()])]), texts: [aside('NEXT ONE IS YOURS.')], hold: 3 },
+          { actors: hScene(null, [hunter('stand')]), texts: [aside('NEXT ONE IS YOURS.')], hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter whips back. Whip on whip.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('itemGet')]), texts: [aside('RIGHT.')], hold: 1 },
+          { actors: [hunter('attack'), ...his([lash()]), ...dangleAtStrike(), ...pair('spark', [31, 6], [31, 0])], hold: 2 },
+          { actors: [hunter('attack'), ...his([lash()]), ...dangleAtStrike(-6, { offstage: true })], texts: [aside('HA.')], hold: 1 },
+          { actors: [hunter('stand'), ...dangleAtStrike(-20, { offstage: true })], texts: [aside('HA.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter explains the whip. It is not a toy.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('stand')]), texts: [aside('THAT IS A WHIP.')], hold: 3 },
+          { actors: hScene('hover', [hunter('stand'), ...sweatAt()]), texts: [aside('NOT A TOY.')], hold: 3 },
+          { actors: hScene(null, [hunter('stand')]), texts: [aside('NOT A TOY.')], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('An axe. Thrown at you. It curves. Of course.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('itemGet')], his(pair('axe1', [11, -2], [11, -12]))), hold: 1 },
+          { actors: hScene('hover', [hunter('stand')], his([...pair('axe2', [19, -10], [19, -20]), ...pair('spark', [21, -12], [21, -22], { offstage: true })])), hold: 1 },
+          { actors: hScene('enter', [hunter('stand')], his(pair('axe1', [23, -18], [23, -26], { offstage: true }))), texts: [aside('AND STAY OUT.')], hold: 2 },
+          { actors: hScene(null, [hunter('stand')]), texts: [aside('AND STAY OUT.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Holy water. Your hand is blessed. And on fire.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('itemGet')], his(pair('vial', [11, -2], [11, -12]))), hold: 1 },
+          { actors: hScene('hover', [hunter('stand')], his(pair('vial', [18, -12], [18, -22], { offstage: true }))), hold: 1 },
+          { actors: hScene('hover', [hunter('stand')], pair('burst1', [16, -9], [16, -19])), texts: [aside('BE CLEANSED.')], hold: 1 },
+          { actors: hScene('hover', [hunter('stand')], pair('burst2', [16, -9], [16, -19])), texts: [aside('BE CLEANSED.')], hold: 1 },
+          { actors: hScene('enter', [hunter('stand')], pair('burst1', [16, -9], [16, -19])), texts: [aside('BE CLEANSED.')], hold: 1 },
+          { actors: hScene(null, [hunter('stand')]), texts: [aside('YOU ARE WELCOME.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The familiars are loose. Bad hand. Bad.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('itemGet')], his(FAMILIARS_OUT)), texts: [aside('GET IT.')], hold: 2 },
+          { actors: hScene('hover', [hunter('stand')], his([...pair('bat1', [8, -10], [8, -20]), ...pair('famSword', [24, -6], [24, -16]), ...pair('famFairy1', [18, 0], [18, -10])])), hold: 1 },
+          { actors: hScene('hover', [hunter('stand')], his([...pair('bat2', [9, -12], [9, -20]), ...pair('famSword', [25, -5], [25, -15]), ...pair('famFairy2', [19, 1], [19, -9])])), hold: 1 },
+          { actors: hScene('enter', [hunter('stand')], his([...pair('bat1', [12, -19], [12, -20]), ...pair('famSword', [22, -14], [22, -20]), ...pair('famFairy1', [18, -8], [18, -16])])), hold: 1 },
+          { actors: hScene(null, [hunter('stand')]), texts: [aside('GOOD FAMILIARS.')], hold: 3 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The hunter quit. He took the door.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('stand'), ...sweatAt()]), texts: [aside('THAT IS IT.')], hold: 2 },
+          { actors: hScene('hover', [hunter('stand')]), texts: [aside('I QUIT.')], hold: 2 },
+          { actors: hScene(null, [hunter('walk', 4)]), texts: [aside('I QUIT.')], hold: 1 },
+          { actors: hScene(null, [hunter('walk', 10)]), hold: 1 },
+          { actors: hScene(null, [{ ...hunter('walk', 18), offstage: true }]), hold: 1 },
+          { actors: hScene(null, [{ ...hunter('walk', 26), offstage: true }]), hold: 1 },
+          { actors: [], texts: [say('...', 6, 4)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The hunter turned to mist. Dramatically.', [
+          ...hStart(),
+          { actors: hScene('hover', [hunter('stand')]), texts: [aside('ENOUGH.')], hold: 2 },
+          { actors: hScene('hover', [hunter('stand'), ...his([prop('mist1', -1, 6), big(prop('mist2', 0, -6))])]), texts: [aside('ENOUGH.')], hold: 1 },
+          { actors: hScene(null, his([prop('mist1', -1, 4), prop('mist2', 2, 0), big(prop('mist1', 0, -8))])), hold: 2 },
+          { actors: hScene(null, his([prop('mist2', 3, 4), prop('mist1', 6, 7), big(prop('mist2', 2, -5))])), hold: 1 },
+          { actors: hScene(null, his([prop('mist1', 10, 6), prop('mist2', 14, 3)])), hold: 1 },
+          { actors: hScene(null, his([prop('mist2', 20, 6, { offstage: true }), prop('mist1', 26, 4, { offstage: true })])), hold: 1 },
+          { actors: [], texts: [say('...', 6, 4)], hold: 2 },
+        ]),
+      ),
+    ],
+  },
+  // The hunter's rest: the hall without him, the candelabra burning for nobody, a bat passing through.
+  rest: loop(
+    { actors: [candelabra('candelabra1'), prop('bat1', 0, -12)], hold: 6 },
+    { actors: [candelabra('candelabra2'), prop('bat2', 6, -15)], hold: 6 },
+    { actors: [candelabra('candelabra1'), prop('bat1', 12, -12)], hold: 6 },
+    { actors: [candelabra('candelabra2'), prop('bat2', 18, -16)], hold: 6 },
+    { actors: [candelabra('candelabra1')], texts: [say('...', 6, 4)], hold: 6 },
+    { actors: [candelabra('candelabra2')], hold: 6 },
+  ),
+}
+
+// 2. Knock on the coffin. It lies at the right where the strike spot is; the
+// hunter watches from his own spot (the lord a step left of it, clear of the
+// lid). The hand comes down over the lid with the whip hanging, its tip the
+// knocker. What the coffin says sits right of the whip while the hand is in,
+// over the lid once it has gone.
+const COF = { x: 14, y: 9 }
+const KX = 20
+const KNOCK_Y: Record<Reach, number> = { enter: -28, hover: -16, poke: -13 }
+const knockAt = (k: Reach, opts: Partial<Actor> = {}): Actor[] => dangle(KX, KNOCK_Y[k], entering(k, opts))
+/** The coffin, its lid raised `lift` (eyes in the gap from 2), the whole `dy` lower (sinking) or higher (carried off). */
+const casket = (lift = 0, dy = 0, opts: Partial<Actor> = {}): Actor[] =>
+  ofCoffin([
+    prop('coffinLid', COF.x, COF.y - lift + dy, opts),
+    ...(lift >= 2 ? [prop('coffinEyes', COF.x + 4, COF.y + 2 + dy, opts)] : []),
+    prop('coffinBase', COF.x, COF.y + 4 + dy, opts),
+  ])
+/** The hunter watching from his spot, `dx` along: the lord a step further left. */
+const watcher = (pose = 'stand', dx = 0, swap?: Record<string, string>): Actor[] => [small(hunter(pose, dx, 0, swap)), big(hunter(pose, dx - 1, 0, swap))]
+const watcherSweat = sweatAt(0, -1)
+const kScene = (k: Reach | null, coffin: Actor[] = casket(), more: Actor[] = [], who: Actor[] = watcher()): Actor[] => [...who, ...coffin, ...(k ? knockAt(k) : []), ...more]
+const KNOCK_SPARK = SPARK(27, 6)
+const kStart = (coffin: Actor[] = casket(), who?: Actor[]): Frame[] => [
+  { actors: kScene('enter', coffin, [], who), hold: 1 },
+  { actors: kScene('hover', coffin, [], who), hold: 1 },
+  { actors: kScene('poke', coffin, [KNOCK_SPARK], who), hold: 1 },
+]
+/** What the coffin says: right of the whip (x 27, at most 9 characters) while the hand is in; over the lid (x 16, at most 20) once it has gone. */
+const fromCoffin = (text: string, x = 27, y = 4, color = ink): SceneText => ({ ...say(text, x, y, color), gone: 'coffin' })
+/** The hunter's word while the hand is over the coffin: left of the whip, at most 7 characters (20 once the hand has gone). */
+const watcherSays = (text: string, color = ink): SceneText => hisLine(say(text, 16, 0, color))
+/** The hunter's word from in front of the coffin: left of him, clear of the ring. */
+const guardSays = (text: string, color = ink): SceneText => hisLine(say(text, -8, -4, color))
+/** Bats over the lid, carrying it off `dy` higher. */
+const carriers = (dy: number, offstage = false): Actor[] => ofCoffin([prop('bat1', 15, 3 + dy, { offstage }), prop('bat2', 26, 2 + dy, { offstage })])
+const knockCoffin: ThemeAction = {
+  id: 'coffin',
+  label: 'KNOCK COFFIN',
+  restLabel: '(MOVED OUT)',
+  gone: ['coffin'],
+  needs: ['coffin'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Knocked on the coffin. The cache sleeps on.', [
+          ...kStart(),
+          { actors: kScene('hover'), texts: [fromCoffin('z')], hold: 2 },
+          { actors: kScene('poke', casket(2), [KNOCK_SPARK]), hold: 1 },
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('...')], hold: 2 },
+          { actors: kScene(null), texts: [fromCoffin('Z', 16)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Knocked. Something inside said: go away.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('GO AWAY.')], hold: 3 },
+          { actors: kScene('poke', casket(2), [KNOCK_SPARK]), hold: 1 },
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('I MEAN IT')], hold: 2 },
+          { actors: kScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Knocked. It is occupied. Who knew.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('OCCUPIED.')], hold: 3 },
+          { actors: kScene('hover'), hold: 1 },
+          { actors: kScene(null), texts: [fromCoffin('VERY OCCUPIED.', 16)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('A bat came out. It has questions.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(2), ofCoffin([prop('bat2', 27, 6)])), hold: 1 },
+          { actors: kScene('hover', casket(2), ofCoffin([prop('bat1', 27, -2)])), hold: 1 },
+          { actors: kScene('hover', casket(2), ofCoffin([prop('bat2', 27, -8)])), texts: [fromCoffin('?')], hold: 2 },
+          { actors: kScene('enter', casket(2), ofCoffin([prop('bat1', 27, -14)])), texts: [fromCoffin('?')], hold: 1 },
+          { actors: kScene(null, casket(), ofCoffin([prop('bat2', 14, -20, { offstage: true })])), texts: [fromCoffin('NOT MINE.', 16)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('You knocked. It knocked back. Politely.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(1)), texts: [fromCoffin('knock.')], hold: 2 },
+          { actors: kScene('hover'), hold: 1 },
+          { actors: kScene('hover', casket(1)), texts: [fromCoffin('knock.')], hold: 2 },
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('YES?')], hold: 3 },
+          { actors: kScene(null), hold: 1 },
+        ]),
+      ),
+      needing(['hunter'], take(
+        ...captioned('The hunter asks you to keep it down.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(), [], watcher('itemGet')), texts: [watcherSays('SHH.')], hold: 2 },
+          { actors: kScene('hover', casket(), watcherSweat), texts: [watcherSays('QUIET.')], hold: 2 },
+          { actors: kScene('poke', casket(), [KNOCK_SPARK]), texts: [watcherSays('...')], hold: 1 },
+          { actors: kScene(null, casket(), watcherSweat), texts: [watcherSays('IT IS SLEEPING.')], hold: 3 },
+        ]),
+      )),
+    ],
+    irritated: [
+      take(
+        ...captioned('A hand came out and slapped yours. Fair.', [
+          ...kStart(),
+          { actors: kScene('poke', casket(10), ofCoffin([prop('claw', 22, 3), SPARK(27, 2)])), texts: [fromCoffin('HISS.')], hold: 1 },
+          { actors: kScene('hover', casket(10), ofCoffin([prop('claw', 22, 3)])), texts: [fromCoffin('HISS.')], hold: 1 },
+          { actors: kScene('enter', casket(10), ofCoffin([prop('claw', 22, 3)])), texts: [fromCoffin('NO.')], hold: 2 },
+          { actors: kScene(null, casket(2)), texts: [fromCoffin('NO.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The coffin reminds you: it is daytime.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('DAYTIME.')], hold: 3 },
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('RUDE.')], hold: 2 },
+          { actors: kScene(null, casket(2)), texts: [fromCoffin('HAVE YOU NO SHAME.', 16)], hold: 3 },
+          { actors: kScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The lid slammed. The castle shook a little.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(4)), hold: 1 },
+          { actors: kScene('enter', casket(8)), texts: [fromCoffin('...')], hold: 1 },
+          { actors: kScene('enter', casket(), watcherSweat), texts: [fromCoffin('SLAM.', 27, 4, gold)], hold: 2 },
+          { actors: kScene(null, casket(), watcherSweat), texts: [fromCoffin('SLAM.', 27, 4, gold)], hold: 1 },
+          { actors: kScene(null), texts: [fromCoffin('AND STAY OUT.', 16)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The coffin would like to know: what.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('WHAT.')], hold: 3 },
+          { actors: kScene('poke', casket(2), [KNOCK_SPARK]), hold: 1 },
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('WHAT NOW.')], hold: 3 },
+          { actors: kScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Hissed at. By furniture.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('HISS.')], hold: 2 },
+          { actors: kScene('hover', casket(2), ofCoffin([prop('bat2', 27, 6), prop('bat1', 27, -4)])), texts: [fromCoffin('HISSSS.')], hold: 2 },
+          { actors: kScene('enter', casket(2), ofCoffin([prop('bat1', 27, -10), prop('bat2', 27, -16)])), hold: 1 },
+          { actors: kScene(null, casket(2), ofCoffin([prop('bat2', 18, -19, { offstage: true }), prop('bat1', 26, -16)])), texts: [fromCoffin('...', 16)], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The coffin took your whip. Finders keepers.', [
+          ...kStart(),
+          { actors: kScene('poke', casket(10), ofCoffin([prop('claw', 22, 3)])), texts: [fromCoffin('MINE.')], hold: 2 },
+          // The whip goes in; the fist comes back empty.
+          { actors: [...watcher(), ...casket(10), weapon(21, 1, { turn: 'cw', fixed: true, gone: 'coffin' }), ...ofCoffin([prop('claw', 22, 3)]), fist(KX, KNOCK_Y.hover)], texts: [fromCoffin('MINE NOW.')], hold: 2 },
+          { actors: [...watcher(), ...casket(4), fist(KX, KNOCK_Y.enter, { offstage: true })], texts: [fromCoffin('MINE NOW.')], hold: 1 },
+          { actors: kScene(null), texts: [fromCoffin('THANK YOU.', 16)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('A skeleton sat up in there. Wrong coffin.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(10), ofCoffin([prop('skeletonRise1', 21, 9)])), hold: 1 },
+          { actors: kScene('hover', casket(10), ofCoffin([prop('skeletonRise2', 21, 6)])), texts: [fromCoffin('BOO.', 27, 4, gold)], hold: 2 },
+          { actors: kScene('enter', casket(10), ofCoffin([prop('skeletonRise2', 21, 6)])), texts: [fromCoffin('BOO.', 27, 4, gold)], hold: 1 },
+          { actors: kScene(null, casket(10), ofCoffin([prop('skeletonRise1', 21, 9)])), texts: [fromCoffin('WRONG COFFIN.', 16)], hold: 1 },
+          { actors: kScene(null, casket(2)), texts: [fromCoffin('WRONG COFFIN.', 16)], hold: 2 },
+        ]),
+      ),
+      needing(['hunter'], take(
+        ...captioned('The hunter stands guard. Let it sleep.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(), [], watcher('walk', 4)), hold: 1 },
+          { actors: kScene('hover', casket(), [], watcher('stand', 8)), texts: [guardSays('NO.')], hold: 2 },
+          { actors: kScene('hover', casket(), [], watcher('stand', 8)), texts: [guardSays('LET IT SLEEP.')], hold: 3 },
+          { actors: kScene('enter', casket(), [], watcher('stand', 8)), texts: [guardSays('LET IT SLEEP.')], hold: 1 },
+          { actors: kScene(null, casket(), [], watcher('walk', 4)), hold: 1 },
+          { actors: kScene(null, casket(), [], watcher('stand')), hold: 1 },
+        ]),
+      )),
+    ],
+    snapped: [
+      take(
+        ...captioned('The coffin sank through the floor. Tidy.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('BYE.')], hold: 2 },
+          { actors: kScene('enter', casket(0, 3, { offstage: true })), texts: [fromCoffin('BYE.')], hold: 1 },
+          { actors: kScene(null, casket(0, 7, { offstage: true })), hold: 1 },
+          { actors: kScene(null, casket(0, 11, { offstage: true })), hold: 1 },
+          { actors: kScene(null, [], [prop('mist2', 16, 10)]), hold: 1 },
+          { actors: kScene(null, [], watcherSweat), texts: [watcherSays('...')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The bats took the coffin. All of it.', [
+          ...kStart(),
+          { actors: kScene('hover', casket(2)), texts: [fromCoffin('ENOUGH.')], hold: 2 },
+          { actors: kScene('enter', casket(), carriers(0)), hold: 1 },
+          { actors: kScene(null, casket(0, -4), carriers(-4)), hold: 1 },
+          { actors: kScene(null, casket(0, -10), carriers(-10)), hold: 1 },
+          { actors: kScene(null, casket(0, -18, { offstage: true }), carriers(-18, true)), hold: 1 },
+          { actors: kScene(null, casket(0, -28, { offstage: true }), carriers(-28, true)), hold: 1 },
+          { actors: kScene(null, [], watcherSweat), texts: [watcherSays('THAT WAS NEW.')], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The coffin's rest: the hunter goes over to look at the empty spot.
+  rest: loop(
+    { actors: watcher('stand'), hold: 6 },
+    { actors: watcher('walk', 4), hold: 6 },
+    { actors: [...watcher('stand', 8), ...sweatAt(8, 7)], texts: [hisLine(say('...', 31, 4))], hold: 6 },
+    { actors: [...watcher('stand', 8), ...sweatAt(8, 7)], texts: [hisLine(say('HM.', 31, 4))], hold: 6 },
+    { actors: watcher('walk', 4), hold: 6 },
+    { actors: watcher('stand'), hold: 6 },
+  ),
+}
+
+// 3. Poke Death. He floats at the right edge facing the hunter, scythe
+// forward; the hand comes down at the corner over his skull with the whip
+// hanging. His lines go over his head, between him and the hunter; the
+// hunter's go left of his own head, under the price tag.
+const DX = 20
+const RX = 28
+const POKE_Y: Record<Reach, number> = { enter: -30, hover: -20, poke: -17 }
+const reaper = (k: 1 | 2, x = DX, y = 0, opts: Partial<Actor> = {}): Actor => prop(`death${k}`, x, y, { flip: true, ...opts })
+const pokeAt = (k: Reach, opts: Partial<Actor> = {}): Actor[] => dangle(RX, POKE_Y[k], entering(k, opts))
+const dScene = (k: Reach | null, death: Actor[] = [reaper(1)], more: Actor[] = [], who: Actor[] = [hunter('stand')]): Actor[] => [...who, ...(k ? pokeAt(k) : []), ...death, ...more]
+const POKE_SPARK = SPARK(24, 3)
+const dStart = (death: Actor[] = [reaper(1)]): Frame[] => [
+  { actors: dScene('enter', death), hold: 1 },
+  { actors: dScene('hover', death), hold: 1 },
+  { actors: dScene('poke', death, [POKE_SPARK]), hold: 1 },
+]
+/** Death's line, over his head between him and the hunter: at most 14 characters; a second line at y -2. */
+const grim = (text: string, y = -4, color = ink): SceneText => say(text, 14, y, color)
+/** The hunter's word, left of his head and under the price tag: at most 9 characters. */
+const hunterSays = (text: string, color = ink): SceneText => hisLine(say(text, -10, -4, color))
+const LIST = prop('list', 18, 5)
+const SICKLE = (k: 1 | 2, x: number, y: number, opts: Partial<Actor> = {}): Actor => prop(`sickle${k}`, x, y, opts)
+const GLARE = { swap: { deathEye: 'hurtA' } }
+/** The whip held up in Death's hand, by the grip. */
+const TROPHY = weapon(20, -8, { turn: 'ccw', fixed: true })
+const pokeDeath: ThemeAction = {
+  id: 'death',
+  label: 'POKE DEATH',
+  restLabel: '(REAPING)',
+  // Death takes it out on the hunter: he stays, the hunter goes. Poking Death needs no one in particular.
+  gone: ['hunter'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked Death. Death says: not yet.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)]), texts: [grim('NOT YET.')], hold: 3 },
+          { actors: dScene('hover'), texts: [grim('...')], hold: 2 },
+          { actors: dScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Death checks the list. You are not on it. Yet.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(1)], [LIST]), texts: [grim('HM.')], hold: 2 },
+          { actors: dScene('hover', [reaper(2)], [LIST]), texts: [grim('YOU ARE NOT'), grim('ON THE LIST.', -2)], hold: 4 },
+          { actors: dScene(null, [reaper(1)], [LIST]), texts: [grim('YET.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Death said boo. It was not that scary.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)]), hold: 1 },
+          { actors: dScene('hover', [reaper(2, DX, -3)]), texts: [grim('BOO.', -4, gold)], hold: 2 },
+          { actors: dScene('hover', [reaper(1)]), hold: 1 },
+          { actors: dScene(null), texts: [hunterSays('MEH.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Death drifted out of reach. Smoothly.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(1, 17)]), hold: 1 },
+          { actors: dScene('hover', [reaper(2, 14)]), texts: [grim('TSK.')], hold: 2 },
+          { actors: dScene('poke', [reaper(2, 14)]), texts: [grim('TSK.')], hold: 1 },
+          { actors: dScene('hover', [reaper(1, 17)]), hold: 1 },
+          { actors: dScene(null), texts: [grim('...')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Death is on break. Back in five. Centuries.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)]), texts: [grim('ON BREAK.')], hold: 3 },
+          { actors: dScene('hover'), texts: [grim('BACK IN FIVE.')], hold: 3 },
+          { actors: dScene(null), texts: [grim('CENTURIES.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Death found that charming. Somehow.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(1, DX, 2)]), texts: [grim('OH.')], hold: 2 },
+          { actors: dScene('hover', [reaper(1, DX, 2)]), texts: [grim('CHARMED.')], hold: 3 },
+          { actors: dScene(null, [reaper(2)]), texts: [grim('CHARMED.')], hold: 2 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('Death threw a sickle. It missed. On purpose.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)], [SICKLE(1, 20, 4)]), hold: 1 },
+          { actors: dScene('hover', [reaper(2)], [SICKLE(2, 23, -5)]), hold: 1 },
+          { actors: dScene('hover', [reaper(1)], [SICKLE(1, 22, -14)]), texts: [grim('WHOOPS.')], hold: 1 },
+          { actors: dScene('enter', [reaper(1)], [SICKLE(2, 20, -22, { offstage: true })]), texts: [grim('NEXT TIME.')], hold: 2 },
+          { actors: dScene(null), texts: [grim('NEXT TIME.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Death swung. You kept your fingers. Barely.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2, DX, -2)]), hold: 1 },
+          { actors: dScene('hover', [reaper(2, DX - 1, -6)], [SPARK(26, -5)]), hold: 1 },
+          { actors: dScene('enter', [reaper(1, DX, -2)]), texts: [grim('CLOSE.')], hold: 2 },
+          { actors: dScene(null), texts: [grim('VERY CLOSE.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Death is busy. There is a list. It is long.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)], [LIST]), texts: [grim('I AM BUSY.')], hold: 3 },
+          { actors: dScene('hover', [reaper(2)], [LIST]), texts: [grim('IT IS LONG.')], hold: 2 },
+          { actors: dScene(null, [reaper(1)], [LIST]), texts: [grim('YOU ARE NOT'), grim('HELPING.', -2)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Death asked you to stop that. In capitals.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2, DX, 0, GLARE)]), texts: [grim('STOP.', -4, gold)], hold: 2 },
+          { actors: dScene('poke', [reaper(2, DX, 0, GLARE)], [POKE_SPARK]), hold: 1 },
+          { actors: dScene('hover', [reaper(2, DX, 0, GLARE)]), texts: [grim('THAT.', -4, gold)], hold: 2 },
+          { actors: dScene(null), texts: [grim('...')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Death called a skeleton. It took notes.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)]), texts: [grim('RISE.')], hold: 1 },
+          { actors: dScene('hover', [reaper(1)], [prop('skeletonRise1', 14, 11)]), hold: 1 },
+          { actors: dScene('hover', [reaper(1)], [prop('skeletonRise2', 14, 7)]), hold: 1 },
+          { actors: dScene('hover', [reaper(2)], [prop('skeleton', 14, 2)]), texts: [grim('TAKE NOTES.')], hold: 2 },
+          { actors: dScene('enter', [reaper(1)], [prop('skeleton', 14, 2)]), hold: 1 },
+          { actors: dScene(null, [reaper(1)], [prop('skeleton', 14, 2)]), texts: [grim('NOTED.')], hold: 3 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      needing(['hunter'], take(
+        ...captioned('Death points at the hunter. He objects.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)]), texts: [grim('ENOUGH.')], hold: 2 },
+          { actors: dScene('hover', [reaper(2, DX - 3)]), texts: [grim('HIM FIRST.'), hunterSays('?!')], hold: 2 },
+          { actors: dScene('hover', [reaper(2, DX - 3)], [], [hunter('stand'), ...sweatAt()]), texts: [grim('HIM FIRST.'), hunterSays('I OBJECT.')], hold: 3 },
+          { actors: dScene(null, [reaper(1)], [], [hunter('stand'), ...sweatAt()]), texts: [hunterSays('NOT ME.')], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('Three sickles. Death means it this time.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)], [SICKLE(1, 21, 3)]), hold: 1 },
+          { actors: dScene('hover', [reaper(2)], [SICKLE(2, 25, -5), SICKLE(1, 21, 3)]), hold: 1 },
+          { actors: dScene('hover', [reaper(1)], [SICKLE(1, 29, -12), SICKLE(2, 25, -5), SICKLE(1, 21, 3), SPARK(26, -14)]), texts: [grim('THREE.')], hold: 1 },
+          { actors: dScene('enter', [reaper(2)], [SICKLE(2, 30, -20), SICKLE(1, 29, -12), SICKLE(2, 25, -5)]), texts: [grim('AND STAY GONE.')], hold: 2 },
+          { actors: dScene(null), texts: [grim('AND STAY GONE.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Death took your whip. He has a collection.', [
+          ...dStart(),
+          { actors: dScene('poke', [reaper(2, DX, -3)]), texts: [grim('MINE.')], hold: 1 },
+          // The whip changes hands; the fist comes back empty.
+          { actors: [hunter('stand'), fist(RX, POKE_Y.hover), reaper(1), TROPHY], texts: [grim('MINE.')], hold: 2 },
+          { actors: [hunter('stand'), fist(RX, POKE_Y.enter, { offstage: true }), reaper(2), TROPHY], texts: [grim('NICE.')], hold: 2 },
+          { actors: [hunter('stand'), reaper(1), TROPHY], texts: [grim('NICE.')], hold: 2 },
+        ]),
+      ),
+    ],
+    snapped: [
+      needing(['hunter'], take(
+        ...captioned('Death took it out on the hunter. Closer.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)]), texts: [grim('FINE.')], hold: 2 },
+          { actors: dScene('hover', [reaper(2, DX - 4)]), texts: [grim('SOMEONE GOES.')], hold: 2 },
+          { actors: dScene('enter', [reaper(2, DX - 4)]), texts: [grim('HIM.'), hunterSays('?!')], hold: 2 },
+          { actors: dScene(null, [reaper(2, DX - 4)], [], [hunter('walk', 4), ...sweatAt(4)]), hold: 1 },
+          { actors: dScene(null, [reaper(1, DX - 2)], [], [hunter('walk', 12)]), hold: 1 },
+          { actors: dScene(null, [reaper(1)], [], [{ ...hunter('walk', 20), offstage: true }]), hold: 1 },
+          { actors: dScene(null, [reaper(1)], [], [{ ...hunter('walk', 28), offstage: true }]), hold: 1 },
+          { actors: dScene(null, [reaper(1)], [], []), texts: [grim('NEXT.')], hold: 3 },
+        ]),
+      )),
+      needing(['hunter'], take(
+        ...captioned('The hunter caught a sickle. Your fault.', [
+          ...dStart(),
+          { actors: dScene('hover', [reaper(2)], [SICKLE(1, 18, 5)]), hold: 1 },
+          { actors: dScene('hover', [reaper(2)], [SICKLE(2, 12, 6)]), hold: 1 },
+          { actors: dScene('hover', [reaper(1)], [], [hunter('stand', 0, 0, HURT_A)]), texts: [hunterSays('OW.')], hold: 1 },
+          { actors: dScene('enter', [reaper(1)], [], [hunter('stand', 0, 0, HURT_B)]), texts: [grim('WHOOPS.'), hunterSays('OW.')], hold: 1 },
+          { actors: dScene(null, [reaper(1)], [], [hunter('stand'), ...sweatAt()]), texts: [grim('WHOOPS.'), hunterSays('I AM OUT.')], hold: 2 },
+          { actors: dScene(null, [reaper(1)], [], [hunter('walk', 6)]), hold: 1 },
+          { actors: dScene(null, [reaper(1)], [], [hunter('walk', 14)]), hold: 1 },
+          { actors: dScene(null, [reaper(1)], [], [{ ...hunter('walk', 22), offstage: true }]), hold: 1 },
+          { actors: dScene(null, [reaper(1)], [], []), texts: [grim('...')], hold: 2 },
+        ]),
+      )),
+    ],
+  },
+  // Death's rest: he keeps the floor while the hunter is wherever he sent him.
+  rest: loop(
+    { actors: [reaper(1)], hold: 8 },
+    { actors: [reaper(2)], texts: [grim('NEXT.')], hold: 6 },
+    { actors: [reaper(1)], hold: 8 },
+    { actors: [reaper(2)], texts: [grim('ANYONE?')], hold: 6 },
+    { actors: [reaper(1)], texts: [grim('...')], hold: 6 },
+  ),
+}
+
+const actions: ThemeAction[] = [whipHunter, knockCoffin, pokeDeath]
+
 const HUNTER_POSES = { stand: 'stand', walk: 'walk', attack: 'attack', itemGet: 'itemGet', sleep: 'sleep' }
 const LORD_POSES = { stand: 'lordStand', walk: 'lordWalk', attack: 'lordAttack', itemGet: 'lordItemGet', sleep: 'lordSleep' }
 /** The lord's whip hand: a pixel further out and six higher than a hunter's, the grip level with his fist. */
@@ -1044,6 +1726,7 @@ export const castlevania: Theme = {
   cold,
   overkill,
   events,
+  actions,
   scene: {
     height: 40,
     anchor: { x: 12, y: 20 },

@@ -39,9 +39,12 @@ import { AUTOPILOT_PARTS, linesToText, noticeSummary, paneLines } from './pane'
 import { resolveTheme, THEMES, themeId } from './themes'
 import {
   aboutLines,
+  actionButtons,
+  actionOf,
   activityFor,
   duration,
   fill,
+  goneNow,
   hasMessage,
   HERO_TIERS,
   heroTier,
@@ -51,8 +54,10 @@ import {
   LOG_ROWS,
   logLines,
   meterLines,
+  pressAction,
   pushLog,
   questLayout,
+  restingAction,
   renderBar,
   renderLineup,
   renderScene,
@@ -590,6 +595,10 @@ const EVENT_MAX_AGE_S = 5
  * seconds: one full cycle of the loop when that is shorter.
  */
 const DWELL_MAX_S = 2.5
+/** Seconds for one point of an action's heat to cool (see `pressAction`). */
+const HEAT_DECAY_S = 10
+/** Seconds a snapped action rests before it takes presses again. */
+const ACTION_REST_S = 30
 
 /**
  * The scene between frames. The hooks write `live` (what the session is doing)
@@ -621,6 +630,8 @@ let sceneMark = -1
 let coldSent = false
 let limitsOver: Set<string> | null = null
 let paletteMode: 'dark' | 'light' = 'dark'
+/** The action row as last drawn (labels and rest states), to redraw when an action rests or wakes. */
+let actionsShown = ''
 /** Picked on the About tab: the hero and weapon the scene shows instead of the session's own. Display only. */
 let tryHero: HeroTier | null = null
 let tryWeapon: WeaponTier | null = null
@@ -630,9 +641,15 @@ function fps(options: PluginOptions): number {
   return Math.min(8, Math.max(2, Number(options.themeFps) || 6))
 }
 
-/** Queues a one-shot for the scene; nothing queues while no scene is animating. */
+/**
+ * Queues a one-shot for the scene; nothing queues while no scene is animating.
+ * A moment already waiting is not queued again: a burst of parallel tool calls
+ * plays its result once, not once per call.
+ */
 function sceneEvent(name: EventName, vars: Record<string, string> = {}) {
   if (!animTimer) return
+  const same = JSON.stringify(vars)
+  if (scene.queue.some(q => q.name === name && JSON.stringify(q.vars) === same)) return
   scene.queue.push({ name, at: scene.tick, vars })
   if (scene.queue.length > 20) scene.queue.shift()
 }
@@ -657,7 +674,7 @@ async function activeTheme($: EngineInterface, options: PluginOptions): Promise<
   return theme
 }
 
-async function sceneState($: EngineInterface, options: PluginOptions): Promise<SceneState> {
+async function sceneState($: EngineInterface, options: PluginOptions, theme: Theme): Promise<SceneState> {
   const snap = await read($, snapshot)
   const a = await read($, autopilot)
   const hero = tryHero ?? heroTier(snap?.model ?? null)
@@ -677,6 +694,8 @@ async function sceneState($: EngineInterface, options: PluginOptions): Promise<S
     nextWarmUsd: c.floors?.warm ?? null,
     nextColdUsd: c.floors?.cold ?? null,
     event: scene.playing,
+    rest: restingAction(theme, scene),
+    gone: goneNow(theme, scene),
   }
 }
 
@@ -726,7 +745,15 @@ function stopAnim() {
   animTimer?.cancel()
   animTimer = null
   animEpoch = null
-  scene = { ...sceneStart(), tick: scene.tick, live: scene.live, picks: scene.picks }
+  scene = { ...sceneStart(), tick: scene.tick, live: scene.live, picks: scene.picks, actions: scene.actions }
+}
+
+/** A press on one of the theme's action buttons: the reaction plays from the next frame. */
+async function pokeScene($: EngineInterface, options: PluginOptions, id: string) {
+  if (!animTimer) return
+  const theme = await activeTheme($, options)
+  const rate = fps(options)
+  scene = pressAction(theme, scene, id, { heatDecay: HEAT_DECAY_S * rate, rest: ACTION_REST_S * rate })
 }
 
 function startAnim($: EngineInterface, options: PluginOptions) {
@@ -753,20 +780,27 @@ async function animate($: EngineInterface, options: PluginOptions) {
 
     // The session's state first (it awaits), then the step in one go: a hook
     // that fires meanwhile has written to `scene` before the step reads it.
-    const live = await sceneState($, options)
+    const live = await sceneState($, options, theme)
     const playing = scene.playing
     scene = stepScene(
       theme,
       { ...scene, tick: Math.max(due, scene.tick + 1) },
       { maxAge: EVENT_MAX_AGE_S * rate, maxDwell: Math.ceil(DWELL_MAX_S * rate), overkill: live.overkill, cold: live.cacheCold },
     )
-    const state: SceneState = { ...live, tick: scene.tick, activity: scene.activity, since: scene.since, event: scene.playing }
+    const state: SceneState = { ...live, tick: scene.tick, activity: scene.activity, since: scene.since, event: scene.playing, rest: restingAction(theme, scene), gone: goneNow(theme, scene) }
 
-    // A moment that just began goes on the log: its message, else its line.
-    if (scene.playing && scene.playing !== playing) {
+    // A moment that just began goes on the log: its message, else its line. A reaction's frames carry their own captions.
+    if (scene.playing && scene.playing !== playing && !scene.playing.action) {
       const ev = scene.playing
-      const template = hasMessage(theme, ev.name) ? ev.name : theme.text[ev.name]
+      const name = ev.name as EventName
+      const template = hasMessage(theme, name) ? name : theme.text[name]
       sceneLog = pushLog(sceneLog, fill(theme, template, ev.vars), now)
+    }
+    // An action that began to rest, or woke: its button changes.
+    const buttons = actionButtons(theme, scene).map(b => `${b.id}:${b.resting}`).join(' ')
+    if (buttons !== actionsShown) {
+      actionsShown = buttons
+      $.ui.invalidate('ui.render')
     }
     const shown = liveLog(sceneLog, now).join('\n')
     if (shown !== sceneLogShown) {
@@ -843,6 +877,27 @@ function sceneLimits(rateLimits: Snapshot['rateLimits']) {
     }
   }
   limitsOver = over
+}
+
+/** `/hud poke [id | 1..3]`: presses one of the theme's action buttons; alone, names them. */
+async function pokeCommand($: EngineInterface, sub: string, options: PluginOptions) {
+  const theme = await activeTheme($, options)
+  const actions = theme.actions ?? []
+  if (!actions.length) {
+    $.ui.toast(`${theme.name} has nothing to poke`)
+    return {}
+  }
+  const action = actions[Number(sub) - 1] ?? actions.find(a => a.id.toLowerCase() === sub)
+  if (!action) {
+    $.ui.toast(`Poke what? ${actions.map((a, i) => `${i + 1}: ${a.label} (${a.id})`).join(', ')}`)
+    return {}
+  }
+  if (!animTimer) {
+    $.ui.toast('Open the Quest tab to poke the scene')
+    return {}
+  }
+  await pokeScene($, options, action.id)
+  return {}
 }
 
 async function themeCommand($: EngineInterface, sub: string, options: PluginOptions) {
@@ -1075,6 +1130,7 @@ export const register: Register = (on, options) => {
     }
     if (arg === 'autopilot') return autopilotCommand($, sub, options)
     if (arg === 'theme') return themeCommand($, sub, options)
+    if (arg === 'poke') return pokeCommand($, sub, options)
     if (arg === 'effort-check') return effortCheckCommand($, options)
     if (arg === 'prices') return { text: pricesText(options, (await read($, snapshot))?.model ?? null) }
     if (arg === 'text' || !hasSurface) return { text: await paneText($, options) }
@@ -1097,7 +1153,7 @@ export const register: Register = (on, options) => {
       await closePane($)
       return {}
     }
-    if (arg) return { text: 'Usage: /hud [band [full|compact|off] | show | hide | theme [name|preview] | reset | prices | text | autopilot [on|off] | effort-check]' }
+    if (arg) return { text: 'Usage: /hud [band [full|compact|off] | show | hide | theme [name|preview] | poke [action] | reset | prices | text | autopilot [on|off] | effort-check]' }
 
     const opened = await togglePane($)
     if (opened && !opened.isPlaced) return { text: await paneText($, options) }
@@ -1302,7 +1358,7 @@ export const register: Register = (on, options) => {
     const canDraw = hasRaster && width >= minCols
     const meters = await meterData($, options, theme)
     const lines = meters ? meterLines(theme, palette, meters, fmtClock, fmtTokens) : []
-    const state = await sceneState($, options)
+    const state = await sceneState($, options, theme)
     const bars = await barState($, state)
     barWanted = canDraw ? (renderBar(theme, bars, cols)?.wanted ?? 1) : 1
     const layout = questLayout(theme, { rows, tabRows: picker ? 2 : 1, meterRows: lines.length, barWanted })
@@ -1327,12 +1383,25 @@ export const register: Register = (on, options) => {
     } else {
       stopAnim()
     }
+    // The theme's actions, as a row of buttons under the scene: a digit presses one while the pane has the focus.
+    const buttons = sceneRows ? actionButtons(theme, scene) : []
+    actionsShown = buttons.map(b => `${b.id}:${b.resting}`).join(' ')
+    const actionRow = buttons.length ? (
+      <Box key="actions" flexDirection="row">
+        {buttons.flatMap((b, i) => [
+          ...(i ? [<Text key={`act-gap${i}`}>{'  '}</Text>] : []),
+          <Button key={`act-${b.id}`} label={b.label} hotkey={String(i + 1)} plain dimColor={b.resting} onPress={() => void pokeScene($, options, b.id)} />,
+        ])}
+      </Box>
+    ) : null
     // Without a scene, its moment or loop in words (the live activity when nothing animates).
-    const fallback = sceneRows ? null : theme.text[scene.playing?.name ?? (animTimer ? scene.activity : scene.live)]
+    const playingNow = scene.playing
+    const fallback = sceneRows ? null : playingNow?.action ? (actionOf(theme, playingNow.action.id)?.label ?? null) : theme.text[(playingNow?.name as EventName | undefined) ?? (animTimer ? scene.activity : scene.live)]
     const log = logLines(palette, liveLog(sceneLog, await $.clock.now()), sceneRows ? layout.log : LOG_ROWS, fallback, width)
     return (
       <Box flexDirection="column">
         {parts}
+        {actionRow}
         {drawLines(log, 'g')}
         {drawLines(lines, 'm')}
       </Box>

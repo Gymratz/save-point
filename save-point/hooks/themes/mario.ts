@@ -7,7 +7,7 @@
 // cents, TIME is the cache (it snows when it runs out) and the limits are lava.
 
 import { at, hero, loop, once, weapon } from './kit'
-import type { Actor, Frame, HeroTier, SceneText, Theme } from './types'
+import type { Actor, Animation, Frame, HeroTier, SceneText, Theme, ThemeAction } from './types'
 
 const pixels = {
   // The plumber
@@ -354,6 +354,13 @@ const sprites: Theme['sprites'] = {
   zipThin: { rows: ['...WW...', '........', '.....WW.', '........', '.WW.....'] },
   // A drop of sweat: pale, so it shows on the sky
   sweat: { rows: ['.a.', '.a.', 'aWa', 'aaa', '.a.'] },
+  // Your glove (the actions): white, a red cuff, from the top of the scene
+  glove: { rows: ['.RRRRRR.', 'RRRRRRRR', 'KWWWWWWK', 'KWKWKWWK', 'KWWWWWWK', 'KWWWWWWK', '.KWWWWK.', '..KKKK..'] },
+  // The retainer bowing (the head two rows lower, the vest tucked)
+  toadBow: { rows: ['........', '........', '..RWWR..', '.WWRRWW.', 'RWWRRWWR', 'WWWWWWWW', '.SKSSKS.', 'SBBBBBBS', '..WWWW..', '.OO..OO.'] },
+  // The bomb going off: the burst, then the ring it leaves
+  boom: { rows: ['....F.F....', '..F.eYe.F..', '...eYWYe...', '.F.YWWWY.F.', '..eWWWWWe..', '.F.YWWWY.F.', '...eYWYe...', '..F.eYe.F..', '....F.F....'] },
+  boom2: { rows: ['.F...W...F.', '...e...e...', '.W.......W.', '...........', 'F....W....F', '...........', '.W.......W.', '...e...e...', '.F...W...F.'] },
   // Status bar
   coinIcon: { rows: ['.Y.', 'YWy', 'YWy', 'YWy', '.y.'] },
   itemMushroom: { rows: ITEM_MUSHROOM },
@@ -609,6 +616,656 @@ const events: Theme['events'] = {
   ),
 }
 
+// ---------------------------------------------------------------------------
+// Actions: the buttons under the scene. You are a white glove with a red cuff
+// from the top of the scene, holding the plumber's own item upside down (the
+// hammer bonks head first). Each press plays one of the tier's takes, picked at
+// random; the target's patience wears down with repeated presses.
+// ---------------------------------------------------------------------------
+
+const NOT_SMALL: HeroTier[] = [...SUPER, ...CAPE]
+/**
+ * The glove (8 by 8) with the item of the current effort hanging from the fist, its bottom 12 pixels under
+ * the glove's top. Over the plumber (not `fixed`) the Small form's `aloft` moves the item a pixel left: a pixel back for it.
+ */
+const you = (x: number, y: number, opts: Partial<Actor> = {}): Actor[] => [
+  ...(opts.fixed
+    ? [weapon(x + 2, y + 5, { flipY: true, ...opts })]
+    : [
+        { ...weapon(x + 3, y + 5, { flipY: true, ...opts }), tiers: SMALL },
+        { ...weapon(x + 2, y + 5, { flipY: true, ...opts }), tiers: NOT_SMALL },
+      ]),
+  at('glove', x, y, opts),
+]
+/** The empty glove: knuckles for a block. */
+const fist = (x: number, y: number, opts: Partial<Actor> = {}): Actor => at('glove', x, y, opts)
+// Who is who, for the rests: the plumber (and whatever is his) is `plumber`, the ? block `block`, the retainer `toad`.
+const plumber = (pose: string, x = 0, y = 0, swap?: Record<string, string>): Actor => ({ ...hero(pose, x, y, swap), gone: 'plumber' })
+const his = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'plumber' }))
+/** The plumber's line beside his head (it follows the form's height), right of the glove. */
+const says = (text: string, y = -2, x = 17): SceneText => ({ ...said(text, x, y), gone: 'plumber' })
+const zz = (text: string, x: number, y: number): SceneText => ({ ...txt(text, x, y), gone: 'plumber' })
+/** A take that is only picked while these are present. */
+const needing = (needs: string[], anim: Animation): Animation => ({ ...anim, needs })
+/** A reaction: one-shot, every frame held twice as long as written (a line stays about a second at 6 fps). */
+const take = (...frames: Frame[]): Animation => once(...frames.map(f => ({ ...f, hold: 2 * Math.max(1, f.hold ?? 1) })))
+/** The same caption on every frame from `from` on. */
+const captioned = (caption: string, frames: Frame[], from = 2): Frame[] => frames.map((f, k) => (k >= from ? { ...f, caption } : f))
+const bonk = (x: number, y: number, opts: Partial<Actor> = {}): Actor => at('sparkle', x, y, opts)
+const STAR = { R: 'starR', r: 'starr', B: 'starB', H: 'starH', C: 'starC', c: 'starc' }
+
+// 1. Poke the plumber. The glove comes down on his cap from the top of the
+// scene (it rises with the Cape and drops to the Small form, as a prop over
+// the head does): in from above, a hover, the poke, then the reaction.
+const AX = 4
+const A_ENTER = -22
+const A_HOVER = -15
+const A_POKE = -12
+/** The plumber and the glove at `y` (null: gone). */
+const aScene = (y: number | null, who: Actor[], more: Actor[] = []): Actor[] => [...who, ...(y === null ? [] : you(AX, y, y <= A_ENTER ? { offstage: true } : {})), ...more]
+const aStart = (who: Actor[] = [plumber('stand')]): Frame[] => [
+  { actors: aScene(A_ENTER, who), hold: 1 },
+  { actors: aScene(A_HOVER, who), hold: 1 },
+  { actors: aScene(A_POKE, who, [bonk(7, -4)]), hold: 1 },
+]
+const pokePlumber: ThemeAction = {
+  id: 'plumber',
+  label: 'POKE PLUMBER',
+  restLabel: '(WARPED OFF)',
+  gone: ['plumber'],
+  needs: ['plumber'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned("Poked the plumber. It's-a him, apparently.", [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('stand')]), texts: [says('!')], hold: 2 },
+          { actors: aScene(A_HOVER, [plumber('stand')]), texts: [says("IT'S-A ME.")], hold: 3 },
+          { actors: aScene(null, [plumber('stand')]), texts: [says("IT'S-A ME.")], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The plumber jumps. The glove regrets it.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, his(bump()), [bonk(7, -12)]), hold: 1 },
+          { actors: aScene(A_ENTER, his(land())), texts: [says('HA!', -6)], hold: 2 },
+          { actors: aScene(null, [plumber('stand')]), texts: [says('HA!')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked. The plumber thought it was a coin.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('itemGet')]), texts: [says('A COIN?', -4)], hold: 3 },
+          { actors: aScene(A_HOVER, [plumber('stand')]), texts: [says('...NO.')], hold: 3 },
+          { actors: aScene(null, [plumber('stand')]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The plumber tips his cap. Manners.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('itemGet')]), texts: [says('HELLO.', -4)], hold: 3 },
+          { actors: aScene(A_HOVER, [plumber('stand')]), hold: 1 },
+          { actors: aScene(null, [plumber('stand')]), texts: [says('GOODBYE.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked. The plumber takes a nap about it.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('stand')]), texts: [says('...')], hold: 2 },
+          { actors: aScene(A_HOVER, [plumber('lie')]), texts: [zz('z', 5, 4)], hold: 2 },
+          { actors: aScene(null, [plumber('lie')]), texts: [zz('z', 6, 2)], hold: 2 },
+          { actors: aScene(null, [plumber('lie')]), texts: [zz('Z', 7, 0)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The plumber checks the glove for coins. None.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('itemGet')]), texts: [says('HM.', -4)], hold: 2 },
+          { actors: aScene(A_HOVER, [plumber('itemGet')]), texts: [says('NO COINS.', -4)], hold: 3 },
+          { actors: aScene(null, [plumber('stand')]), texts: [says('CHEAP.')], hold: 2 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The plumber throws his item at the glove.', [
+          ...aStart(),
+          // The thrown item is `fixed` throughout: held, `fixed` changes nothing (the form's `hand` still places it) and it keeps the straddle check off the glove's copy.
+          { actors: aScene(A_HOVER, [plumber('attack'), weapon(13, 4, { fixed: true })]), hold: 1 },
+          { actors: aScene(A_HOVER, [plumber('attack'), weapon(10, -9, { fixed: true })], [bonk(8, -11)]), hold: 1 },
+          { actors: aScene(A_ENTER, [plumber('stand')]), texts: [says('HEY!')], hold: 2 },
+          { actors: aScene(null, [plumber('stand')]), texts: [says('HEY!')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Mamma mia. The plumber has words.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('stand'), ...his(sweat())]), texts: [says('MAMMA MIA.')], hold: 3 },
+          { actors: aScene(A_HOVER, [plumber('stand'), ...his(sweat())]), texts: [says('AGAIN?')], hold: 2 },
+          { actors: aScene(null, [plumber('stand')]), texts: [says('AGAIN?')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The plumber sidesteps. The glove pokes air.', [
+          { actors: aScene(A_ENTER, [plumber('stand')]), hold: 1 },
+          { actors: aScene(A_HOVER, [plumber('walk', 8)]), hold: 1 },
+          { actors: aScene(A_POKE, [plumber('stand', 8)]), hold: 2 },
+          { actors: aScene(A_HOVER, [plumber('stand', 8)]), texts: [says('MISSED.', -2, -6)], hold: 3 },
+          { actors: aScene(null, [plumber('walk', 4)]), hold: 1 },
+          { actors: aScene(null, [plumber('stand')]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked too hard. That counted as a hit.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('stand', 0, 0, FLASH)]), hold: 1 },
+          { actors: aScene(A_HOVER, his([shrunk()])), hold: 1 },
+          { actors: aScene(A_ENTER, [plumber('stand', 0, 0, FLASH)]), hold: 1 },
+          { actors: aScene(null, his([shrunk()])), texts: [says('OW.', 2)], hold: 2 },
+          { actors: aScene(null, [plumber('stand')]), texts: [says('OW.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The plumber taps his foot. At you.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('stand')]), texts: [says('.')], hold: 1 },
+          { actors: aScene(A_HOVER, [plumber('walk')]), texts: [says('..')], hold: 1 },
+          { actors: aScene(A_HOVER, [plumber('stand')]), texts: [says('...')], hold: 1 },
+          { actors: aScene(A_HOVER, [plumber('walk')]), texts: [says('....')], hold: 1 },
+          { actors: aScene(null, his(lookBack())), texts: [says('WELL?')], hold: 3 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      needing(['toad'], take(
+        ...captioned('A retainer has been summoned. He is tiny.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('itemGet')]), texts: [says('TOAD!', -4)], hold: 2 },
+          { actors: aScene(A_HOVER, [plumber('itemGet'), { ...at('zip', TOADS.right + 6, TOADS.y + 3, { flip: true }), gone: 'toad' }]), hold: 1 },
+          { actors: aScene(A_HOVER, [plumber('stand'), { ...at('toad1', TOADS.right, TOADS.y), gone: 'toad' }]), texts: [{ ...txt('SIR?', 26, 6), gone: 'toad' }], hold: 2 },
+          { actors: aScene(A_ENTER, [plumber('stand'), { ...at('toad2', TOADS.right, TOADS.y), gone: 'toad' }]), texts: [{ ...txt('SHOO.', 26, 6), gone: 'toad' }], hold: 2 },
+          { actors: aScene(null, [plumber('stand'), { ...at('toad1', TOADS.right, TOADS.y), gone: 'toad' }]), texts: [{ ...txt('SHOO.', 26, 6), gone: 'toad' }], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('Star power. The glove thinks twice.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('stand'), prop('superStar', 24, 4)]), hold: 1 },
+          { actors: aScene(A_HOVER, [plumber('stand'), prop('superStar', 17, 8)]), hold: 1 },
+          { actors: aScene(A_HOVER, [plumber('itemGet', 0, 0, STAR)], [bonk(7, -12)]), hold: 1 },
+          { actors: aScene(A_ENTER, [plumber('itemGet', 0, 0, STAR)], [bonk(9, -16)]), texts: [says('COME ON.', -4)], hold: 2 },
+          { actors: aScene(null, [plumber('stand', 0, 0, STAR)]), texts: [says('COME ON.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The plumber warps out. Back in a bit.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('stand')]), texts: [says('NOPE.')], hold: 2 },
+          { actors: aScene(A_ENTER, [plumber('stand', 0, ON_PIPE), pipe()]), hold: 1 },
+          { actors: aScene(null, [plumber('dive', 0, ON_PIPE + 6), pipe()]), hold: 1 },
+          { actors: aScene(null, [plumber('dive', 0, ON_PIPE + 12), pipe()]), hold: 1 },
+          { actors: aScene(null, [pipe()]), texts: [zz('. . .', 5, -2)], hold: 3 },
+          { actors: aScene(null, [plumber('rise', 0, ON_PIPE + 6), pipe()]), hold: 1 },
+          { actors: aScene(null, [plumber('itemGet', 0, ON_PIPE), pipe()]), texts: [says('GONE?', -14)], hold: 3 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The plumber warped off. No forwarding pipe.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('stand'), ...his(sweat())]), texts: [says("THAT'S IT.")], hold: 3 },
+          { actors: aScene(A_ENTER, [plumber('stand', 0, ON_PIPE), pipe()]), hold: 1 },
+          { actors: aScene(null, [plumber('dive', 0, ON_PIPE + 4), pipe()]), hold: 1 },
+          { actors: aScene(null, [plumber('dive', 0, ON_PIPE + 8), pipe()]), hold: 1 },
+          { actors: aScene(null, [plumber('dive', 0, ON_PIPE + 12), pipe()]), hold: 1 },
+          { actors: aScene(null, [pipe()]), texts: [zz('. . .', 5, -2)], hold: 3 },
+          { actors: [pipe()], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Course clear. The plumber clocked out.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, [plumber('stand')]), texts: [says('ENOUGH.')], hold: 2 },
+          { actors: aScene(null, [...pole(-15), plumber('walk', 2)]), hold: 1 },
+          { actors: [...pole(-15), plumber('itemGet', 5, -12)], hold: 1 },
+          { actors: [...pole(-8), plumber('itemGet', 5, -6)], hold: 1 },
+          { actors: [...pole(0), plumber('itemGet', 5, 0)], hold: 1 },
+          { actors: [...pole(6), plumber('walk', 12)], hold: 1 },
+          { actors: [...pole(6), { ...plumber('walk', 22), offstage: true }], hold: 1 },
+          { actors: [...pole(6), { ...plumber('walk', 34), offstage: true }], hold: 1 },
+          { actors: pole(6), texts: [txt('...', 22, -4)], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The plumber's rest: the meadow without him; a walker strolls through, in peace for once.
+  rest: loop(
+    { actors: [], hold: 4 },
+    ...[28, 22, 16, 10, 4, -2].map((x, k) => ({ actors: [at(k % 2 ? 'walker2' : 'walker1', x, 8)], hold: 2 })),
+    { actors: [at('walker1', -6, 8)], texts: [txt('?', -3, 2)], hold: 4 },
+    { actors: [at('walker2', -12, 8)], hold: 2 },
+    { actors: [at('walker1', -18, 8, { offstage: true })], hold: 2 },
+  ),
+}
+
+// 2. Hit the ? block. Knuckles from the top (the block hangs eight pixels under
+// the scene's top edge, so the glove is mostly cuff): blocks are hit from
+// below, and this one knows it.
+const BX = BLOCK.x
+const B_ENTER = -28
+const B_HOVER = -23
+const B_POKE = -20
+const USED = { q: 'n', Q: 'N', z: 'n', K: 'N' }
+/** The block, `dy` down (pushed by the knuckles) in a palette swap (shimmer, or brown when it plays empty). */
+const qb = (dy = 0, swap?: Record<string, string>): Actor => ({ ...block(dy, swap), gone: 'block' })
+const qbAt = (x: number, y: number, opts: Partial<Actor> = {}): Actor => ({ ...prop('qblock', x, y, opts), gone: 'block' })
+/** What falls out of the block: a coin, a mushroom, a walker, a bomb... the block's, so gone with it. */
+const out = (sprite: string, x: number, y: number, opts: Partial<Actor> = {}): Actor => ({ ...prop(sprite, x, y, opts), gone: 'block' })
+const bits = (...spots: [number, number][]): Actor[] => spots.map(([x, y]) => out('debris', x, y))
+/** The block's line, right of it (row 6, under the knuckles and the spark). */
+const blockSays = (text: string, y = -8, x = 19): SceneText => ({ ...txt(text, x, y), gone: 'block' })
+const BONK_B = bonk(16, -14, { fixed: true })
+const bScene = (y: number | null, blocks: Actor[] = [qb()], more: Actor[] = [], who: Actor[] = [plumber('stand')]): Actor[] => [
+  ...who,
+  ...blocks,
+  ...(y === null ? [] : [fist(BX, y, { fixed: true, ...(y <= B_HOVER ? { offstage: true } : {}) })]),
+  ...more,
+]
+const bStart = (swap?: Record<string, string>): Frame[] => [
+  { actors: bScene(B_ENTER, [qb(0, swap)]), hold: 1 },
+  { actors: bScene(B_HOVER, [qb(0, swap)]), hold: 1 },
+  { actors: bScene(B_POKE, [qb(1, swap)], [BONK_B]), hold: 1 },
+]
+const hitBlock: ThemeAction = {
+  id: 'block',
+  label: 'HIT BLOCK',
+  restLabel: '(NO BLOCK)',
+  gone: ['block'],
+  needs: ['block'],
+  reactions: {
+    calm: [
+      needing(['plumber'], take(
+        ...captioned('Bonk. A coin fell out. The plumber kept it.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb()], [out('coin', 11, -4)]), hold: 1 },
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)], [out('coin', 11, 2)]), hold: 1 },
+          { actors: bScene(null, [qb()], [out('coin', 12, 4)], [plumber('itemGet')]), texts: [says('+1', -4)], hold: 2 },
+          { actors: bScene(null, [qb()], [], [plumber('itemGet')]), texts: [says('THANKS.', -4)], hold: 3 },
+        ]),
+      )),
+      take(
+        ...captioned('Bonk. Nothing. The block says it was empty.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, USED)]), texts: [blockSays('...')], hold: 3 },
+          { actors: bScene(B_HOVER, [qb(0, USED)], [], [plumber('stand'), ...his(sweat())]), texts: [says('EMPTY.')], hold: 2 },
+          { actors: bScene(null, [qb(0, USED)]), hold: 1 },
+          { actors: bScene(null, [qb()]), hold: 1 },
+        ]),
+      ),
+      needing(['plumber'], take(
+        ...captioned('Bonk. A mushroom. It is for the plumber.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)], [out('mushroom', 10, -4)]), hold: 1 },
+          { actors: bScene(B_HOVER, [qb()], [out('mushroom', 16, 8)]), hold: 1 },
+          { actors: bScene(null, [qb()], [out('mushroom', 16, 8)], [plumber('walk', 2)]), hold: 1 },
+          { actors: bScene(null, [qb()], [], [plumber('itemGet', 2, 0, FLASH)]), hold: 1 },
+          { actors: bScene(null, [qb()], [], [plumber('itemGet', 2)]), texts: [says('FOR ME?', -4, 19)], hold: 3 },
+          { actors: bScene(null, [qb()], [], [plumber('walk', 1)]), hold: 1 },
+          { actors: bScene(null, [qb()]), hold: 1 },
+        ]),
+      )),
+      take(
+        ...captioned('Bonk. Blocks do not talk. This one sulks.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb()]), texts: [blockSays('...')], hold: 2 },
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)]), texts: [blockSays('...')], hold: 1 },
+          { actors: bScene(B_HOVER, [qb()], [], his(lookBack())), texts: [says('?')], hold: 3 },
+          { actors: bScene(null, [qb()]), hold: 1 },
+        ]),
+      ),
+      needing(['plumber'], take(
+        ...captioned('Bonk. From the top. That is not how it works.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb()]), texts: [says('FROM BELOW.')], hold: 3 },
+          { actors: bScene(null, [qb(-1)], [out('coin', 11, -18)], his(bump())), hold: 1 },
+          { actors: bScene(null, [qb(0, SHIMMER)], [out('coinSpin', 12, -20)], his(land())), hold: 1 },
+          { actors: bScene(null, [qb()], [out('sparkle', 11, -19)]), texts: [says('LIKE SO.')], hold: 3 },
+        ]),
+      )),
+      take(
+        ...captioned('Bonk. The block rang. Something shifted.', [
+          ...bStart(),
+          { actors: bScene(B_POKE, [qb(1)], [BONK_B]), texts: [blockSays('DING', -16)], hold: 1 },
+          { actors: bScene(B_HOVER, [qb()]), texts: [blockSays('DING', -16)], hold: 1 },
+          { actors: bScene(B_HOVER, [qb(1)]), texts: [blockSays('rattle')], hold: 2 },
+          { actors: bScene(null, [qb()], [], [plumber('stand'), ...his(sweat())]), texts: [says('...')], hold: 3 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The block spat a coin. At the glove. +0.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)], [out('coin', 11, -19), bonk(16, -19, { fixed: true })]), hold: 1 },
+          { actors: bScene(B_ENTER, [qb()], [out('coinSpin', 12, -20)]), hold: 1 },
+          { actors: bScene(null, [qb()]), texts: [blockSays('+0')], hold: 3 },
+          { actors: bScene(null, [qb()]), texts: [says('HA.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The block turned brown. On purpose.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, USED)]), hold: 2 },
+          { actors: bScene(B_POKE, [qb(1, USED)]), texts: [blockSays('(empty)')], hold: 2 },
+          { actors: bScene(null, [qb(0, USED)]), texts: [blockSays('(empty)')], hold: 3 },
+          { actors: bScene(null, [qb()]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('A walker fell out. Nobody wanted that.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)], [out('walker1', 16, -4)]), hold: 1 },
+          { actors: bScene(B_HOVER, [qb()], [out('walker1', 16, 4)]), hold: 1 },
+          { actors: bScene(null, [qb()], [out('walker1', 16, 8)]), texts: [{ ...txt('?', 26, 4), gone: 'block' }], hold: 2 },
+          { actors: bScene(null, [qb()], [out('walker2', 16, 8)], [plumber('stand'), ...his(sweat())]), texts: [says('...')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The block scooted over. One block. Rude.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb()]), hold: 1 },
+          { actors: bScene(B_HOVER, [qbAt(18, BLOCK.y)]), hold: 1 },
+          { actors: bScene(B_POKE, [qbAt(18, BLOCK.y)]), texts: [blockSays('...', -8, 27)], hold: 2 },
+          { actors: bScene(null, [qbAt(18, BLOCK.y)]), texts: [says('RUDE.')], hold: 3 },
+          { actors: bScene(null, [qb()]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The block became a brick. Hit that instead.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)]), hold: 1 },
+          { actors: bScene(B_HOVER, [out('brick', BX, BLOCK.y)]), hold: 1 },
+          { actors: bScene(B_POKE, [out('brick', BX, BLOCK.y + 1)], [BONK_B]), hold: 1 },
+          { actors: bScene(B_HOVER, [out('brick', BX, BLOCK.y)]), texts: [blockSays('(brick)')], hold: 3 },
+          { actors: bScene(null, [qb(0, SHIMMER)]), hold: 1 },
+          { actors: bScene(null, [qb()]), hold: 1 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      needing(['plumber'], take(
+        ...captioned('The block called the plumber. His block.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)]), texts: [blockSays('HELP')], hold: 2 },
+          { actors: bScene(B_HOVER, [qb()], [], [plumber('attack'), weapon(13, 4, { fixed: true })]), texts: [says('MY BLOCK.')], hold: 1 },
+          { actors: bScene(B_HOVER, [qb()], [weapon(12, -17, { fixed: true }), bonk(16, -20, { fixed: true })], [plumber('attack')]), hold: 1 },
+          { actors: bScene(B_ENTER, [qb()]), texts: [says('MY BLOCK.')], hold: 2 },
+          { actors: bScene(null, [qb()]), hold: 1 },
+        ]),
+      )),
+      take(
+        ...captioned('The block dropped a bomb. Not a metaphor.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)], [out('bomb', 10, -4)]), hold: 1 },
+          { actors: bScene(B_HOVER, [qb()], [out('bomb', 14, 2)]), hold: 1 },
+          { actors: bScene(B_HOVER, [qb()], [out('bomb', 16, 9), out('bombSpark', 15, 7)], [plumber('stand'), ...his(sweat())]), texts: [says('UH.')], hold: 2 },
+          { actors: bScene(B_ENTER, [qb()], [out('boom', 13, 4)], [plumber('stand', -3)]), texts: [{ ...txt('BOOM', 26, 0), gone: 'block' }], hold: 1 },
+          { actors: bScene(null, [qb()], [out('boom2', 13, 4)], [plumber('stand', -3)]), texts: [{ ...txt('BOOM', 26, 0), gone: 'block' }], hold: 1 },
+          { actors: bScene(null, [qb()], [], [plumber('stand', -3), ...his(sweat())]), texts: [says('...', -2, 14)], hold: 3 },
+        ]),
+      ),
+      needing(['plumber'], take(
+        ...captioned('The block emptied itself. x99. All his.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)], [out('coin', 10, -4), out('coin', 14, -2)]), hold: 1 },
+          { actors: bScene(B_HOVER, [qb()], [out('coin', 10, 2), out('coin', 14, 0), out('coin', 12, -4)]), hold: 1 },
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)], [out('coin', 10, 6), out('coin', 14, 4), out('coin', 12, 1), out('coin', 16, -3)], [plumber('itemGet')]), texts: [blockSays('x99', -16)], hold: 1 },
+          { actors: bScene(B_ENTER, [qb(0, USED)], [out('coin', 10, 8), out('coin', 14, 7), out('coin', 12, 5), out('coin', 16, 2)], [plumber('itemGet')]), texts: [says('x99!', -4)], hold: 2 },
+          { actors: bScene(null, [qb(0, USED)], [], [plumber('itemGet')]), texts: [says('RICH.', -4)], hold: 3 },
+        ]),
+      )),
+    ],
+    snapped: [
+      take(
+        ...captioned('The block broke. No coins. No block.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)]), texts: [blockSays('!')], hold: 1 },
+          { actors: bScene(B_POKE, [qb(1)], [BONK_B]), hold: 1 },
+          { actors: bScene(B_POKE, [], bits([10, -12], [16, -12], [10, -7], [16, -7])), hold: 1 },
+          { actors: bScene(B_HOVER, [], bits([7, -14], [19, -14], [9, -4], [17, -4])), hold: 1 },
+          { actors: bScene(B_ENTER, [], bits([6, -8], [20, -8], [9, 3], [17, 3])), hold: 1 },
+          { actors: bScene(null, [], [], [plumber('stand'), ...his(sweat())]), texts: [says('...')], hold: 3 },
+          { actors: bScene(null, []), texts: [says('MY COINS.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The block floated off. Blocks can do that.', [
+          ...bStart(),
+          { actors: bScene(B_HOVER, [qb(0, SHIMMER)]), texts: [blockSays('ENOUGH.')], hold: 3 },
+          { actors: bScene(B_ENTER, [qb(-3)]), hold: 1 },
+          { actors: bScene(null, [qb(-7)]), hold: 1 },
+          { actors: bScene(null, [{ ...qb(-12), offstage: true }]), hold: 1 },
+          { actors: bScene(null, [{ ...qb(-18), offstage: true }], [], his(bump())), hold: 1 },
+          { actors: bScene(null, [], [], his(land())), hold: 1 },
+          { actors: bScene(null, []), texts: [says('?')], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The block's rest: the plumber jumps where it hung. Nothing.
+  rest: loop(
+    { actors: [plumber('stand')], hold: 4 },
+    { actors: his(bump()), hold: 1 },
+    { actors: his(land()), hold: 1 },
+    { actors: [plumber('stand')], texts: [says('?')], hold: 4 },
+    { actors: his(bump()), hold: 1 },
+    { actors: his(land()), hold: 1 },
+    { actors: [plumber('stand')], texts: [says('...')], hold: 5 },
+  ),
+}
+
+// 3. Poke the retainer, where he stands when the plumber sends him on errands
+// (right of the plumber). The glove is scenery here: it does not rise with the Cape.
+const TX = TOADS.right
+const T_ENTER = -22
+const T_HOVER = -10
+const T_POKE = -6
+const toadAt = (x = TOADS.right, sprite = 'toad1', opts: Partial<Actor> = {}): Actor => ({ ...at(sprite, x, TOADS.y, opts), gone: 'toad' })
+const TOAD = toadAt()
+const TOAD_BACK = toadAt(TOADS.right, 'toad1', { flip: true })
+/** The speed lines the retainer leaves (or arrives by), as in the errands loop. */
+const zip = (thin = false, flip = true, x = TOADS.right + 6): Actor => ({ ...at(thin ? 'zipThin' : 'zip', x, TOADS.y + 3, { flip }), gone: 'toad' })
+/** The retainer's line beside him (ten characters at most), or over his head once the glove is away. */
+const toadSays = (text: string, x = 26, y = 6): SceneText => ({ ...txt(text, x, y), gone: 'toad' })
+const toadAbove = (text: string): SceneText => toadSays(text, TOADS.right, 0)
+const BONK_T = bonk(24, 2, { fixed: true })
+const tScene = (y: number | null, toads: Actor[] = [TOAD], more: Actor[] = [], who: Actor[] = [plumber('stand')]): Actor[] => [
+  ...who,
+  ...toads,
+  ...(y === null ? [] : you(TX, y, { fixed: true, ...(y <= T_ENTER ? { offstage: true } : {}) })),
+  ...more,
+]
+const tStart = (toads: Actor[] = [TOAD], who: Actor[] = [plumber('stand')]): Frame[] => [
+  { actors: tScene(T_ENTER, toads, [], who), hold: 1 },
+  { actors: tScene(T_HOVER, toads, [], who), hold: 1 },
+  { actors: tScene(T_POKE, toads, [BONK_T], who), hold: 1 },
+]
+const pokeToad: ThemeAction = {
+  id: 'toad',
+  label: 'POKE TOAD',
+  restLabel: '(NO TOAD)',
+  gone: ['toad'],
+  needs: ['toad'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Thank you! But the princess is elsewhere.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER), texts: [toadSays('THANK YOU!')], hold: 3 },
+          { actors: tScene(T_HOVER), texts: [toadSays('BUT...')], hold: 2 },
+          { actors: tScene(null), texts: [toadAbove('ANOTHER CASTLE.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Toad bows. Toad is a retainer. It is the job.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER, [toadAt(TX, 'toadBow')]), hold: 2 },
+          { actors: tScene(T_HOVER), texts: [toadSays('SIR.')], hold: 2 },
+          { actors: tScene(T_HOVER, [toadAt(TX, 'toadBow')]), hold: 2 },
+          { actors: tScene(null), texts: [toadSays("MA'AM.")], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned("Poked. Toad's cap is not a mushroom. He says.", [
+          ...tStart(),
+          { actors: tScene(T_POKE, [TOAD], [BONK_T]), texts: [toadSays('NOT FOOD.')], hold: 3 },
+          { actors: tScene(T_HOVER), texts: [toadSays('NOT FOOD.')], hold: 1 },
+          { actors: tScene(null), texts: [toadAbove('IT IS A HAT.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Toad zips off, and back. Errand done.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER, [zip()]), hold: 1 },
+          { actors: tScene(T_HOVER, [zip(true)]), hold: 1 },
+          { actors: tScene(T_HOVER, []), hold: 2 },
+          { actors: tScene(T_HOVER, [zip(false, false)]), hold: 1 },
+          { actors: tScene(null), texts: [toadSays('DONE.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Toad waves back. Toad is very polite.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER, [toadAt(TX, 'toad2')]), texts: [toadSays('HI!')], hold: 2 },
+          { actors: tScene(T_HOVER), texts: [toadSays('HI!')], hold: 2 },
+          { actors: tScene(null, [toadAt(TX, 'toad2')]), texts: [toadSays('HELLO!')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Toad looks up. Toad sees a glove. Toad nods.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER), texts: [toadSays('...')], hold: 2 },
+          { actors: tScene(T_HOVER, [toadAt(TX, 'toadBow')]), hold: 1 },
+          { actors: tScene(T_HOVER), hold: 1 },
+          { actors: tScene(T_HOVER, [toadAt(TX, 'toadBow')]), hold: 1 },
+          { actors: tScene(null), texts: [toadSays('OK.')], hold: 3 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('Toad steps back. Toad is quicker than you.', [
+          { actors: tScene(T_ENTER), hold: 1 },
+          { actors: tScene(T_HOVER, [toadAt(26, 'toad2')]), hold: 1 },
+          { actors: tScene(T_POKE, [toadAt(26)]), hold: 2 },
+          { actors: tScene(T_HOVER, [toadAt(26)]), texts: [toadSays('MISSED.', TX, 2)], hold: 3 },
+          { actors: tScene(null, [toadAt(26, 'toad2')]), hold: 1 },
+          { actors: tScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Toad has had it with being poked. And castles.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER), texts: [toadSays('ENOUGH.')], hold: 3 },
+          { actors: tScene(T_HOVER, [TOAD_BACK]), texts: [toadSays('HMPH.')], hold: 2 },
+          { actors: tScene(null, [TOAD_BACK]), hold: 2 },
+        ]),
+      ),
+      needing(['plumber'], take(
+        ...captioned('Toad tells the plumber. The plumber shrugs.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER), texts: [toadSays('SIR!')], hold: 2 },
+          { actors: tScene(T_HOVER, [TOAD], [], [plumber('itemGet')]), texts: [says('NOT MY JOB.', -4)], hold: 3 },
+          { actors: tScene(null), texts: [toadSays('...')], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('Toad turns his back. Toad has one.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER, [TOAD_BACK]), texts: [toadSays('...')], hold: 2 },
+          { actors: tScene(T_POKE, [TOAD_BACK], [BONK_T]), hold: 1 },
+          { actors: tScene(T_HOVER, [TOAD_BACK]), texts: [toadSays('STILL NO.')], hold: 3 },
+          { actors: tScene(null, [TOAD_BACK]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked. Toad files a complaint with the castle.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER), texts: [toadSays('NOTED.')], hold: 2 },
+          { actors: tScene(T_HOVER), texts: [toadSays('WRITTEN.')], hold: 2 },
+          { actors: tScene(null), texts: [toadAbove('TO THE CASTLE.')], hold: 3 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('Retainers. All of them. The whole staff.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER, [TOAD], [zip(false, false, TOADS.left), zip(false, true, 26)]), texts: [toadSays('BACKUP!')], hold: 1 },
+          { actors: tScene(T_HOVER, [TOAD, toadAt(TOADS.left, 'toad1', { flip: true }), toadAt(26)]), hold: 2 },
+          { actors: tScene(T_ENTER, [TOAD, toadAt(TOADS.left, 'toad2', { flip: true }), toadAt(26, 'toad2')], [], [plumber('stand'), ...his(sweat())]), texts: [says('...')], hold: 2 },
+          { actors: tScene(null, [TOAD, toadAt(TOADS.left, 'toad1', { flip: true }), toadAt(26)]), texts: [toadAbove('WE ARE MANY.')], hold: 3 },
+        ]),
+      ),
+      needing(['plumber'], take(
+        ...captioned('Toad fetched the plumber. He went back to bed.', [
+          ...tStart([TOAD], [plumber('lie')]),
+          { actors: tScene(T_HOVER, [toadAt(TX, 'toad2')], [], [plumber('lie')]), texts: [toadSays('SIR?'), zz('z', 5, 4)], hold: 2 },
+          { actors: tScene(T_HOVER, [TOAD], [], [plumber('lie')]), texts: [toadSays('WAKE UP!'), zz('z', 6, 2)], hold: 2 },
+          { actors: tScene(T_HOVER), texts: [says('WHAT.')], hold: 2 },
+          { actors: tScene(T_ENTER), texts: [toadSays('A GLOVE.')], hold: 2 },
+          { actors: tScene(null), texts: [says('SO?')], hold: 2 },
+          { actors: tScene(null, [TOAD], [], [plumber('lie')]), texts: [zz('z', 5, 4), toadSays('...')], hold: 3 },
+        ]),
+      )),
+      take(
+        ...captioned('Toad threw a mushroom at the glove. Denied.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER, [toadAt(TX, 'toad2')], [{ ...prop('mushroom', 26, 6), gone: 'toad' }]), hold: 1 },
+          { actors: tScene(T_HOVER, [TOAD], [{ ...prop('mushroom', 22, -2), gone: 'toad' }, bonk(24, -4, { fixed: true })]), hold: 1 },
+          { actors: tScene(T_ENTER, [TOAD], [{ ...prop('mushroom', 26, 6), gone: 'toad' }]), texts: [toadSays('1-UP. NO.', TX, 2)], hold: 2 },
+          { actors: tScene(null, [TOAD], [{ ...prop('mushroom', 26, 6), gone: 'toad' }]), texts: [toadAbove('NOT FOR YOU.')], hold: 3 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('Toad left for another castle. Which? Another.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER), texts: [toadSays("THAT'S IT.")], hold: 3 },
+          { actors: tScene(T_ENTER, [toadAt(TX, 'toad2')]), hold: 1 },
+          { actors: tScene(null, [zip()]), hold: 1 },
+          { actors: tScene(null, [zip(true)]), hold: 1 },
+          { actors: tScene(null, []), hold: 2 },
+          { actors: tScene(null, [], [], [plumber('stand'), ...his(sweat())]), texts: [says('TOAD?')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Toad quit. The princess can find herself.', [
+          ...tStart(),
+          { actors: tScene(T_HOVER), texts: [toadSays('I QUIT.')], hold: 3 },
+          { actors: tScene(null), texts: [toadAbove('FIND HER YOURSELF.')], hold: 3 },
+          { actors: tScene(null, [toadAt(26, 'toad2')]), hold: 1 },
+          { actors: tScene(null, [toadAt(34, 'toad1', { offstage: true })]), hold: 1 },
+          { actors: tScene(null, [toadAt(42, 'toad2', { offstage: true })]), hold: 1 },
+          { actors: tScene(null, []), texts: [says('...')], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The retainer's rest: the plumber looks for him where he stood.
+  rest: loop(
+    { actors: [plumber('stand')], hold: 4 },
+    { actors: his(lookBack()), texts: [says('?')], hold: 4 },
+    { actors: [plumber('stand'), at('zipThin', TOADS.right + 6, TOADS.y + 3, { flip: true })], hold: 3 },
+    { actors: [plumber('stand')], texts: [says('TOAD?')], hold: 4 },
+    { actors: [plumber('stand')], hold: 3 },
+  ),
+}
+
+const actions: ThemeAction[] = [pokePlumber, hitBlock, pokeToad]
+
 // A form names every pose; `sleep` (never drawn: each has `lie`) is its standing sprite.
 const SMALL_POSES = { stand: 'smallStand', walk: 'smallWalk', attack: 'smallAttack', itemGet: 'smallItemGet', sleep: 'smallStand', lie: 'smallLie', dive: 'smallStand', rise: 'smallItemGet' }
 const CAPE_POSES = { stand: 'capeStand', walk: 'capeWalk', attack: 'capeAttack', itemGet: 'capeItemGet', sleep: 'capeStand', lie: 'capeLie', dive: 'capeDive', rise: 'capeRise' }
@@ -648,6 +1305,7 @@ export const mario: Theme = {
   cold,
   overkill,
   events,
+  actions,
   scene: {
     height: 40,
     anchor: { x: 12, y: 20 },

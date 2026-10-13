@@ -31,7 +31,7 @@ On an Enterprise or Team plan, an organization policy that allows only managed m
 ## Use
 
 - `/hud`: toggle the pane.  Tabs: Quest, Cost, Tools, Limits, About; Theme dropdown at the top; Autopilot and each of its parts on/off on the Limits tab, each with what it does.  These choices carry to new sessions.
-- `/hud band full|compact|off`, `/hud theme <name>`, `/hud theme preview`, `/hud autopilot on|off`, `/hud effort-check`, `/hud reset`, `/hud prices`, `/hud text`.
+- `/hud band full|compact|off`, `/hud theme <name>`, `/hud theme preview`, `/hud poke <action|1..3>`, `/hud autopilot on|off`, `/hud effort-check`, `/hud reset`, `/hud prices`, `/hud text`.
 
 ## Themes
 
@@ -50,6 +50,8 @@ Pick one from the Theme dropdown in the pane (or `/hud theme <name>`).  Each dra
 | Knee-Deep in the Context | `doom` | HEALTH % and the face, episode by episode | ammo spent | armor |
 | Final Context | `fantasy` | HP | Gil | MP |
 | Close Encounters of the Probed Kind | `alien` | the herd not yet probed, with dawn on its way | sample jars | the cow's sedative |
+
+Three buttons under the scene poke it, in the theme's voice (the alien's: probe the alien, probe the cow, wave at the Feds).  Press one, or keys 1 to 3 while the pane has the focus, or `/hud poke <action|1..3>`.  Each press tries the target's patience a little more: it answers back, then retaliates, then leaves the scene for half a minute, and the button rests until it is back.  Nothing in the session is touched.
 
 The About tab shows every theme's heroes and weapons; "Play every scene on Quest" runs through all its animations.  Milestone banners follow your context thresholds (`contextWarnPercent` and the rest).
 

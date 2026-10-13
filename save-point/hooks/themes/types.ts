@@ -92,13 +92,15 @@ export type Actor = {
   /** Draw only while context used is in [minPercent, maxPercent) (100 included): a sky above ground, plain dark below. */
   minPercent?: number
   maxPercent?: number
+  /** What this actor is part of (`crew`, `cow`): not drawn while an action's rest has taken it away (`ThemeAction.gone`). */
+  gone?: string
 }
 
 /**
  * Text drawn into the scene at a cell position relative to the anchor. `lift`:
  * text over the hero's head rises with a taller form, as a prop does.
  */
-export type SceneText = { text: string; x: number; y: number; color: string; bg?: string; lift?: boolean }
+export type SceneText = { text: string; x: number; y: number; color: string; bg?: string; lift?: boolean; /** As `Actor.gone`: whose line it is. */ gone?: string }
 
 export type Frame = {
   actors: Actor[]
@@ -116,7 +118,54 @@ export type Frame = {
  * below, diagonal). One take is picked each time it starts, and for a loop each
  * time it comes round; never the same take twice running.
  */
-export type Animation = { frames: Frame[]; loop: boolean; variants?: Frame[][] }
+export type Animation = {
+  frames: Frame[]
+  loop: boolean
+  variants?: Frame[][]
+  /** A reaction take: what must be present (not `gone`) for it to be picked. */
+  needs?: string[]
+}
+
+/**
+ * How annoyed the target of an action is: each press adds a point of heat, which
+ * cools by one every few seconds; `calm` at 0 or 1, `irritated` at 2 or 3,
+ * `fedUp` at 4 or 5, `snapped` at 6. A snapped reaction rests the action for a
+ * while (the button goes quiet and shows `restLabel`) and its heat resets.
+ */
+export type ActionTier = 'calm' | 'irritated' | 'fedUp' | 'snapped'
+export const ACTION_TIERS: readonly ActionTier[] = ['calm', 'irritated', 'fedUp', 'snapped']
+
+/**
+ * Something the person can do to the scene from a button under it: poke the
+ * hero, the specimen, the bystander. Purely visual: a press plays one of the
+ * tier's reactions (a one-shot take, picked at random and never one of the
+ * last few) at once, ahead of the session's own moments, which wait for it.
+ * Each reaction's frames carry their own `caption`s for the log.
+ */
+export type ThemeAction = {
+  id: string
+  /** The button's label, in the theme's voice; short enough for three on a 48-column row. */
+  label: string
+  /** What the button says while the action rests after a `snapped` reaction. */
+  restLabel: string
+  /** Takes per tier: at least one each (a tier with none plays the tier below). */
+  reactions: Record<ActionTier, Animation[]>
+  /**
+   * The loop shown in place of the scene's states and moments while the action
+   * rests after a `snapped` reaction: what left stays gone (the moments still
+   * go on the log). Absent, the scene carries on as usual.
+   */
+  rest?: Animation
+  /**
+   * What the rest takes away, by name (`crew`, `ship`): actors and lines marked
+   * `gone` with one of these are not drawn while this action rests, in any
+   * reaction or rest loop; takes that `need` one are not picked; actions that
+   * `need` one rest too (dim, inert, under their own label).
+   */
+  gone?: string[]
+  /** What this action's target is: it rests while another action's rest has any of these away. */
+  needs?: string[]
+}
 
 /** The names of the meter rows under the scene, and of the About tab's lists. */
 export type MeterLabels = {
@@ -306,6 +355,8 @@ export type Theme = {
   events: Record<EventName, Animation>
   /** Absent: the plain list pane, no scene. */
   scene?: SceneSpec
+  /** Buttons under the scene that poke it (see ThemeAction); at most three. */
+  actions?: ThemeAction[]
   /** Text fallback per state and event, for surfaces without Raster. */
   text: Record<ActivityState | EventName, string>
   /**

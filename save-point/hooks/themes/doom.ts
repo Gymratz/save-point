@@ -10,7 +10,7 @@
 
 import { at, hero, loop, once, weapon } from './kit'
 import { rotate } from './pixel'
-import type { Actor, HeroTier, Sprite, Theme } from './types'
+import type { Actor, Animation, Frame, HeroTier, SceneText, Sprite, Theme, ThemeAction } from './types'
 
 const pixels = {
   // The marine
@@ -422,6 +422,19 @@ const CYBER_STEP = edit(CYBER, {
   24: '.ddddd....MMMMMM..',
   25: 'KKKKKK....KKKKKK..',
 })
+/** The cannon arm raised straight up at the ceiling. */
+const CYBER_AIM = edit(CYBER, {
+  3: 'MMMMdddddddd......',
+  4: 'mMMMdKrddrKd......',
+  5: 'mMMMdddddddd......',
+  6: 'mMMM.dDDDDd.......',
+  7: 'mMMMddddddddddd...',
+  8: 'mMMMddDDDDdddddd..',
+  10: '.mMMMdddDDdddddddd',
+  11: '....dddddddddd.ddd',
+  12: '....dddddddddd.ddd',
+  13: '....ddDDDDdddd.dd.',
+})
 
 const DOOR = [
   'KKKKKKKK',
@@ -522,6 +535,11 @@ const sprites: Theme['sprites'] = {
   impDown: rotate(S(IMP), 'cw'),
   cyber: S(CYBER),
   cyberStep: S(CYBER_STEP),
+  cyberAim: S(CYBER_AIM),
+  // Its rocket, nose up.
+  rocket: S(['.r.', 'MMM', 'MmM', 'MmM', 'MMM', 'FfF', '.f.']),
+  // You: a fist in a hazard-striped cuff, reaching down through the ceiling (see the actions).
+  fist: S(['11KK11KK', 'K11KK11K', '.KSSSSK.', 'KSSSSSSK', 'KSSSSSSK', 'KsssSSSK', 'KsSSSSsK', '.KKKKKK.'], HAZARD),
 
   // Props
   crate: S(['KKKKKKKKKK', 'KTttttttTK', 'KtTttttTtK', 'KttTttTttK', 'KtttTTtttK', 'KtttTTtttK', 'KttTttTttK', 'KtTttttTtK', 'KTttttttTK', 'KKKKKKKKKK', 'KttttttttK', 'KKKKKKKKKK']),
@@ -879,6 +897,691 @@ const events: Theme['events'] = {
   ),
 }
 
+// ---------------------------------------------------------------------------
+// Actions: the buttons under the scene. You are the player: a fist in a
+// hazard-striped cuff reaching down through the ceiling, gripping the marine's
+// own gun barrel down to poke with, or shaken bare at the Cyberdemon. Each
+// press plays one of the tier's takes, picked at random; the target's patience
+// wears down with repeated presses (see `pressAction`).
+// ---------------------------------------------------------------------------
+
+/** A reaction: one-shot, every frame held twice as long as written (a line stays about a second at 6 fps). */
+const take = (...frames: Frame[]): Animation => once(...frames.map(f => ({ ...f, hold: 2 * Math.max(1, f.hold ?? 1) })))
+/** The same caption on every frame from `from` on. */
+const captioned = (caption: string, frames: Frame[], from = 2): Frame[] => frames.map((f, k) => (k >= from ? { ...f, caption } : f))
+/** A take that is only picked while these are present. */
+const needing = (needs: string[], anim: Animation): Animation => ({ ...anim, needs })
+/** Actors for the small marines, and others for the Slayers (whose heads are eight pixels higher). */
+const perBuild = (small: Actor[], big: Actor[]): Actor[] => [...small.map(a => ({ ...a, tiers: SMALL })), ...big.map(a => ({ ...a, tiers: BIG }))]
+
+// Who is who, for the rests: the marine (his gun, his lines) is `marine`, the imp `imp`, the Cyberdemon `cyber`.
+const mine = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'marine' }))
+/** The marine with his gun out, `dx` from his place. */
+const armed = (pose = 'stand', dx = 0, swap?: Record<string, string>): Actor[] => mine([hero(pose, dx, 0, swap), gun(dx)])
+/** The marine turned to look behind him. */
+const turned = (): Actor[] => mine([{ ...hero('stand'), flip: true }, gunBack()])
+/** The marine's line: beside the Slayer's visor, over the small marine's head (where his thinking dots go). */
+const aside = (text: string, y = -4, x = 17): SceneText => ({ text, x, y, color: 'txt', gone: 'marine' })
+const sweatAt = (dx: number): Actor[] => mine(sweat.map(a => ({ ...a, x: a.x + dx })))
+/**
+ * The gun raised in the right hand (as when a new one arrives), and the marine
+ * with no gun out: a frame of the latter goes between the gun raised and the
+ * gun held level, or the Slayer's would jump (`liftStraddles`).
+ */
+const raised = (dx = 0): Actor[] => mine([hero('itemGet', dx), weapon(11 + dx, -5)])
+const unarmed = (dx = 0): Actor[] => mine([hero('itemGet', dx)])
+/** The muzzle flash of the raised gun, for either build. */
+const flashUp = (name: 'flash1' | 'flash2', dx = 0): Actor[] => perBuild([at(name, 23 + dx, -5, { fixed: true })], [at(name, 25 + dx, -13, { fixed: true })])
+const GLINT = { V: 'v', Y: 'y' }
+/** The imp where imps stand, in front of the gun; its line, left of it over the marine's gun; its teleport fog. */
+const impAt = (sprite = 'imp', dx = 0, dy = 0, opts: Partial<Actor> = {}): Actor => at(sprite, IMP_AT.x + dx, IMP_AT.y + dy, { fixed: true, gone: 'imp', ...opts })
+const IMP_HERE = impAt()
+const hiss = (text: string, x = 19, y = 0): SceneText => ({ text, x, y, color: 'txt', gone: 'imp' })
+const impFog = (n: 1 | 2): Actor => at(`fog${n}`, IMP_AT.x - 1, IMP_AT.y, { fixed: true, gone: 'imp' })
+/** The Cyberdemon where it teleports in; its line, under the fist and over its horns; its fog; the marine backed off from it, and his line in the gap. */
+const cyberAt = (sprite = 'cyber', dx = 0, dy = 0): Actor => at(sprite, CYBER_AT.x + dx, CYBER_AT.y + dy, { fixed: true, gone: 'cyber' })
+const CYBER_HERE = cyberAt()
+const cyberFogOf = (n: 1 | 2): Actor[] => cyberFog(n).map(a => ({ ...a, gone: 'cyber' }))
+const roar = (text: string, x = 20, y = -12): SceneText => ({ text, x, y, color: 'txt', gone: 'cyber' })
+const backed = (pose = 'stand', dx = 0): Actor[] => armed(pose, -4 + dx)
+const nervous = (): Actor[] => [...backed(), ...sweatAt(-4)]
+const gulp = (text: string): SceneText => aside(text, -4, 13)
+
+/** The fist (8 by 8) gripping the gun of the current effort, turned barrel down: the barrel's tip is 13 pixels under the fist's top. Scenery: it does not rise with the Slayer. */
+const grip = (x: number, y: number, opts: Partial<Actor> = {}): Actor[] => [weapon(x + 1, y + 2, { turn: 'cw', fixed: true, ...opts }), at('fist', x, y, { fixed: true, ...opts })]
+/** The bare fist. */
+const fist = (x: number, y: number, opts: Partial<Actor> = {}): Actor => at('fist', x, y, { fixed: true, ...opts })
+/** The hand scorched (a fireball, a rocket, a muzzle flash), or spat on. */
+const SCORCHED = { swap: { S: 'I', s: 'K', u2: 'D' } }
+const SLIMED = { swap: { S: 'L', s: 'e' } }
+
+// 1. Poke the marine. The fist comes down through the ceiling onto his helmet:
+// in from above, a hover, the poke, then the reaction. It crosses the top of
+// the scene on purpose (the Slayer's helmet is eight pixels higher, so a copy
+// of the hand per build; the Sentinel gets it in the crown).
+const AX = 3
+const A_ENTER = -24
+const A_HOVER = -16
+const A_POKE = -14
+const youAbove = (y: number, hand: Partial<Actor> = {}): Actor[] => perBuild(grip(AX, y, { offstage: true, ...hand }), grip(AX, y - 8, { offstage: true, ...hand }))
+const fistAbove = (y: number): Actor[] => perBuild([fist(AX, y, { offstage: true })], [fist(AX, y - 8, { offstage: true })])
+/** Something at the hovering hand: a fireball arriving, its burst. The Slayer's hand is mostly off the top, so his burst sits lower, on the gun. */
+const atHand = (sprite: string, dx = 0, dy = 0): Actor[] => perBuild([at(sprite, AX + dx, A_HOVER + dy, { fixed: true })], [at(sprite, AX + dx, A_HOVER - 4 + dy, { fixed: true })])
+const fireAt = (x: number): Actor[] => perBuild([at('fireball', x, A_HOVER + 2, { fixed: true })], [at('fireball', x, A_HOVER, { fixed: true })])
+const SPARK = perBuild([at('puff', AX + 2, -3, { fixed: true })], [at('puff', AX + 2, -11, { fixed: true })])
+const aScene = (y: number | null, crew: Actor[] = armed(), more: Actor[] = [], hand: Partial<Actor> = {}): Actor[] => [...crew, ...(y === null ? [] : youAbove(y, hand)), ...more]
+const aStart = (crew: Actor[] = armed(), more: Actor[] = []): Frame[] => [
+  { actors: aScene(A_ENTER, crew, more), hold: 1 },
+  { actors: aScene(A_HOVER, crew, more), hold: 1 },
+  { actors: aScene(A_POKE, crew, [...SPARK, ...more]), hold: 1 },
+]
+const TONK: SceneText = { text: 'TONK', x: 10, y: -6, color: 'txt', lift: true }
+const EXIT: SceneText = { text: 'EXIT', x: DOOR_AT.x, y: -8, color: 'tally', bg: 'ink' }
+/** Teleport fog over the marine standing on the pad. */
+const fogAt = (n: 1 | 2): Actor[] => [at(`fog${n}`, 18, 1, { fixed: true }), { ...at(`fog${n}`, 18, -7, { fixed: true }), tiers: BIG }]
+
+const pokeMarine: ThemeAction = {
+  id: 'marine',
+  label: 'POKE MARINE',
+  restLabel: '(MARINE OUT)',
+  gone: ['marine'],
+  needs: ['marine'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked the marine. He has seen worse.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER), texts: [aside('?')], hold: 2 },
+          { actors: aScene(A_HOVER), texts: [aside('...')], hold: 3 },
+          { actors: aScene(null), texts: [aside('...')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The marine ducks. Reflexes of a pro.', [
+          { actors: aScene(A_ENTER), hold: 1 },
+          { actors: aScene(A_HOVER), hold: 1 },
+          { actors: aScene(A_POKE, armed('sleep')), hold: 2 },
+          { actors: aScene(A_HOVER, armed('sleep')), texts: [aside('NOPE.')], hold: 3 },
+          { actors: aScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked from above. He checks behind him.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, turned()), texts: [aside('?')], hold: 2 },
+          { actors: aScene(A_POKE, turned(), SPARK), hold: 1 },
+          { actors: aScene(A_HOVER, turned()), texts: [aside('HM.')], hold: 2 },
+          { actors: aScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('He aims at the ceiling. Nothing there.', [
+          ...aStart(),
+          { actors: aScene(A_ENTER, unarmed()), hold: 1 },
+          { actors: aScene(null, raised()), texts: [aside('...', -4, 25)], hold: 3 },
+          { actors: aScene(null, unarmed()), hold: 1 },
+          { actors: aScene(null), texts: [aside('HM.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('He grunts. That is the whole review.', [
+          ...aStart(),
+          { actors: aScene(A_POKE, armed('attack'), SPARK), texts: [aside('HNGH.')], hold: 2 },
+          { actors: aScene(A_HOVER, armed('attack')), texts: [aside('HNGH.')], hold: 2 },
+          { actors: aScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Knock knock. Not hollow. Probably.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER), texts: [TONK], hold: 2 },
+          { actors: aScene(A_POKE, armed(), SPARK), texts: [TONK, aside('?')], hold: 2 },
+          { actors: aScene(A_HOVER), texts: [aside('STOP THAT.')], hold: 3 },
+          { actors: aScene(null), hold: 1 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The marine fires at the ceiling. Warning shot.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, unarmed()), hold: 1 },
+          { actors: aScene(A_HOVER, raised(), flashUp('flash1')), hold: 1 },
+          { actors: aScene(A_ENTER, raised(), flashUp('flash2')), hold: 1 },
+          { actors: aScene(null, raised()), texts: [aside('...', -4, 25)], hold: 2 },
+          { actors: aScene(null, unarmed()), hold: 1 },
+          { actors: aScene(null), texts: [aside('NEXT TIME.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Missed. The marine sidesteps. Smug.', [
+          { actors: aScene(A_ENTER), hold: 1 },
+          { actors: aScene(A_HOVER, armed('walk', 6)), hold: 1 },
+          { actors: aScene(A_POKE, armed('stand', 6)), hold: 2 },
+          { actors: aScene(A_HOVER, armed('stand', 6)), texts: [aside('MISSED.', -4, 23)], hold: 2 },
+          { actors: aScene(null, armed('stand', 6)), texts: [aside('SMUG.', -4, 23)], hold: 1 },
+          { actors: aScene(null, armed('walk', 3)), hold: 1 },
+          { actors: aScene(null), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The marine glares. The visor glints.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, armed('stand', 0, GLINT)), texts: [aside('...')], hold: 2 },
+          { actors: aScene(A_HOVER), texts: [aside('...')], hold: 1 },
+          { actors: aScene(A_HOVER, armed('stand', 0, GLINT)), texts: [aside('...')], hold: 2 },
+          { actors: aScene(null, armed('stand', 0, GLINT)), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The marine mutters. Something about tearing.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER), texts: [aside('RIP.')], hold: 2 },
+          { actors: aScene(A_HOVER), texts: [aside('AND TEAR.')], hold: 3 },
+          { actors: aScene(null), texts: [aside('...')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The marine flinches. Health: 100%. Rude.', [
+          ...aStart(),
+          { actors: aScene(A_POKE, armed('stand', 0, HURT_WHITE), SPARK), hold: 1 },
+          { actors: aScene(A_HOVER, armed('stand', -1, HURT_RED)), hold: 1 },
+          { actors: aScene(A_HOVER), texts: [aside('HEALTH 100%.')], hold: 3 },
+          { actors: aScene(null), texts: [aside('RUDE.')], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('That was not a warning shot. The hand flees.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, unarmed()), hold: 1 },
+          { actors: aScene(A_HOVER, raised(), flashUp('flash1')), hold: 1 },
+          { actors: aScene(A_HOVER, raised(), flashUp('flash2'), SCORCHED), hold: 1 },
+          { actors: aScene(A_ENTER, raised(), flashUp('flash1'), SCORCHED), hold: 1 },
+          { actors: aScene(null, raised()), texts: [aside('...', -4, 25)], hold: 1 },
+          { actors: aScene(null, unarmed()), hold: 1 },
+          { actors: aScene(null), texts: [aside('NEXT.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The marine takes your gun. Finders keepers.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER, unarmed()), hold: 1 },
+          { actors: [...raised(), ...fistAbove(A_HOVER)], texts: [aside('MINE NOW.', -4, 25)], hold: 2 },
+          { actors: [...raised(), ...fistAbove(A_ENTER)], texts: [aside('MINE NOW.', -4, 25)], hold: 2 },
+          { actors: unarmed(), hold: 1 },
+          { actors: armed(), texts: [aside('THANKS.')], hold: 2 },
+        ]),
+      ),
+      needing(
+        ['imp'],
+        take(
+          ...captioned('The marine sics the imp on the hand. Teamwork.', [
+            ...aStart(armed(), [IMP_HERE]),
+            { actors: aScene(A_HOVER, armed(), [IMP_HERE]), texts: [aside('GET HIM.')], hold: 2 },
+            { actors: aScene(A_HOVER, armed(), [impAt('impThrow'), ...fireAt(24)]), hold: 1 },
+            { actors: aScene(A_HOVER, armed(), [impAt('impThrow'), ...fireAt(13)]), hold: 1 },
+            { actors: aScene(A_HOVER, armed(), [IMP_HERE, ...atHand('boom')], SCORCHED), hold: 1 },
+            { actors: aScene(A_ENTER, armed(), [IMP_HERE], SCORCHED), texts: [aside('GOOD IMP.')], hold: 2 },
+            { actors: aScene(null, armed(), [IMP_HERE]), texts: [hiss('HSS.')], hold: 2 },
+          ]),
+        ),
+      ),
+    ],
+    snapped: [
+      // The door is drawn after him: he walks into the dark of the doorway.
+      take(
+        ...captioned('The marine takes the exit. Level over.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER), texts: [aside('NOPE.')], hold: 2 },
+          { actors: [...armed('use'), ...door(0)], texts: [aside('BYE.')], hold: 2 },
+          { actors: [...armed(), ...door(1)], hold: 1 },
+          { actors: [...armed('walk', 8), ...door(2)], hold: 1 },
+          { actors: [...perBuild(armed('walk', 16), armed('walk', 13)), ...door(3)], texts: [EXIT], hold: 1 },
+          { actors: [...perBuild(mine([hero('walk', 21)]), mine([hero('walk', 18)])), ...door(3)], texts: [EXIT], hold: 1 },
+          { actors: door(3), texts: [EXIT], hold: 1 },
+          { actors: door(2), texts: [EXIT], hold: 1 },
+          { actors: door(0), texts: [EXIT], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The marine teleports out. Single player.', [
+          ...aStart(),
+          { actors: aScene(A_HOVER), texts: [aside('DONE.')], hold: 2 },
+          { actors: [pad(), ...armed('walk', 8)], hold: 1 },
+          { actors: [pad(), ...armed('stand', 16)], hold: 1 },
+          { actors: [pad(true), ...fogAt(1)], hold: 1 },
+          { actors: [pad(), ...fogAt(2)], hold: 1 },
+          { actors: [pad()], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The marine's rest: an empty room, until the imp comes to see where he went.
+  rest: loop(
+    { actors: [], hold: 8 },
+    { actors: [IMP_HERE], hold: 6 },
+    { actors: [IMP_HERE], texts: [hiss('?')], hold: 6 },
+    { actors: [impAt('imp', 0, 0, { flip: true })], hold: 4 },
+    { actors: [IMP_HERE], texts: [hiss('...')], hold: 6 },
+    { actors: [], hold: 8 },
+  ),
+}
+
+// 2. Poke the imp. It stands where the imps always stand, in front of the
+// marine's gun; the hand is scenery here (the imp is the same height for everyone).
+const IX = 28
+const I_ENTER = -24
+const I_HOVER = -15
+const I_POKE = -12
+const youAtImp = (y: number, hand: Partial<Actor> = {}): Actor[] => grip(IX, y, y <= I_ENTER ? { offstage: true, ...hand } : hand)
+const I_SPARK = at('puff', IX + 2, 0, { fixed: true })
+/** A fireball thrown straight up at the hand, `dy` from the hero's top (the imp's claw is at 0); its burst on the fist. */
+const fireUp = (dy: number): Actor => at('fireball', IX + 2, dy, { turn: 'cw', fixed: true })
+const I_BOOM = at('boom', IX, I_HOVER - 1, { fixed: true })
+const spit = (dy: number): Actor => at('puff', IX + 3, dy, { fixed: true, swap: { F: 'L', O: 'E' } })
+/** The imp peeking out from behind the marine (drawn before him). */
+const HIDING = impAt('imp', -35)
+const iScene = (y: number | null, imp: Actor[] = [IMP_HERE], more: Actor[] = [], crew: Actor[] = armed(), hand: Partial<Actor> = {}): Actor[] => [
+  ...crew,
+  ...imp,
+  ...(y === null ? [] : youAtImp(y, hand)),
+  ...more,
+]
+const iStart = (): Frame[] => [
+  { actors: iScene(I_ENTER), hold: 1 },
+  { actors: iScene(I_HOVER), hold: 1 },
+  { actors: iScene(I_POKE, [IMP_HERE], [I_SPARK]), hold: 1 },
+]
+/** The imp throws at the hand: the arm goes up, the fireball climbs, the fist burns. */
+const impThrows = (hand: Partial<Actor> = {}): Frame[] => [
+  { actors: iScene(I_HOVER, [impAt('impThrow')], [fireUp(-4)], armed(), hand), hold: 1 },
+  { actors: iScene(I_HOVER, [impAt('impThrow')], [fireUp(-11)], armed(), hand), hold: 1 },
+  { actors: iScene(I_HOVER, [IMP_HERE], [I_BOOM], armed(), SCORCHED), hold: 1 },
+]
+
+const pokeImp: ThemeAction = {
+  id: 'imp',
+  label: 'POKE IMP',
+  restLabel: '(IMP GONE)',
+  gone: ['imp'],
+  needs: ['imp'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked the imp. It hisses. Standard imp.', [
+          ...iStart(),
+          { actors: iScene(I_POKE, [IMP_HERE], [I_SPARK]), texts: [hiss('HSSSS')], hold: 2 },
+          { actors: iScene(I_HOVER), texts: [hiss('HSSSS')], hold: 2 },
+          { actors: iScene(null), texts: [hiss('HSS.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The imp looks up. It has questions.', [
+          ...iStart(),
+          { actors: iScene(I_HOVER), texts: [hiss('?')], hold: 2 },
+          { actors: iScene(I_HOVER), texts: [hiss('??')], hold: 3 },
+          { actors: iScene(null, [impAt('imp', 0, 0, { flip: true })]), texts: [hiss('?')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The imp purrs. Imps do not purr. Noted.', [
+          ...iStart(),
+          { actors: iScene(I_POKE, [IMP_HERE], [I_SPARK]), texts: [hiss('prrr')], hold: 2 },
+          { actors: iScene(I_POKE), texts: [hiss('prrrrr')], hold: 2 },
+          { actors: iScene(I_HOVER, [IMP_HERE], [], [...armed(), ...sweatAt(0)]), texts: [hiss('prrr'), aside('?')], hold: 2 },
+          { actors: iScene(null, [IMP_HERE], [], [...armed(), ...sweatAt(0)]), texts: [hiss('...')], hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked the imp. It files a complaint with Hell.', [
+          ...iStart(),
+          { actors: iScene(I_HOVER), texts: [hiss('FORM 666.')], hold: 3 },
+          { actors: iScene(I_HOVER), texts: [hiss('IN BLOOD.')], hold: 3 },
+          { actors: iScene(null), texts: [hiss('...')], hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The imp sidesteps. It knows this game.', [
+          { actors: iScene(I_ENTER), hold: 1 },
+          { actors: iScene(I_HOVER, [impAt('imp', 3)]), hold: 1 },
+          { actors: iScene(I_POKE, [impAt('imp', 3)]), hold: 2 },
+          { actors: iScene(I_HOVER, [impAt('imp', 3)]), texts: [hiss('HSS HSS.')], hold: 3 },
+          { actors: iScene(null, [impAt('imp', 3)]), hold: 1 },
+          { actors: iScene(null), hold: 1 },
+        ]),
+      ),
+      needing(
+        ['marine'],
+        take(
+          ...captioned('The imp and the marine share a look.', [
+            ...iStart(),
+            { actors: iScene(I_HOVER), texts: [hiss('...'), aside('...')], hold: 3 },
+            { actors: iScene(I_HOVER), texts: [hiss('HSS.'), aside('YEAH.')], hold: 2 },
+            { actors: iScene(null), hold: 2 },
+          ]),
+        ),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The imp throws a fireball. At the hand.', [
+          ...iStart(),
+          ...impThrows(),
+          { actors: iScene(I_ENTER, [IMP_HERE], [], armed(), SCORCHED), texts: [hiss('HSS!')], hold: 2 },
+          { actors: iScene(null), texts: [hiss('HA.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The imp scratches. Claws, as advertised.', [
+          ...iStart(),
+          { actors: iScene(I_POKE, [impAt('impThrow')], [at('flash1', IX + 1, -3, { fixed: true })]), texts: [hiss('SKRITCH')], hold: 2 },
+          { actors: iScene(I_HOVER, [impAt('impThrow')], [at('flash2', IX + 1, -6, { fixed: true })]), texts: [hiss('SKRITCH')], hold: 1 },
+          { actors: iScene(I_HOVER), texts: [hiss('HSS.')], hold: 2 },
+          { actors: iScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The imp hisses louder. The marine backs up.', [
+          ...iStart(),
+          { actors: iScene(I_HOVER, [IMP_HERE], [], armed('walk', -2)), texts: [hiss('HSSSSSS!')], hold: 2 },
+          { actors: iScene(I_HOVER, [IMP_HERE], [], [...armed('stand', -4), ...sweatAt(-4)]), texts: [hiss('HSSSSSS!')], hold: 2 },
+          { actors: iScene(null, [IMP_HERE], [], [...armed('stand', -4), ...sweatAt(-4)]), texts: [hiss('HSS.')], hold: 2 },
+          { actors: iScene(null, [IMP_HERE], [], armed('walk', -2)), hold: 1 },
+          { actors: iScene(null), hold: 1 },
+        ]),
+      ),
+      needing(
+        ['marine'],
+        take(
+          ...captioned('The imp appeals to the marine. He shrugs.', [
+            ...iStart(),
+            { actors: iScene(I_HOVER), texts: [hiss('HSS?')], hold: 2 },
+            { actors: iScene(I_HOVER, [IMP_HERE], [], unarmed()), texts: [aside('NOT MY IMP.')], hold: 3 },
+            { actors: iScene(null), texts: [hiss('...')], hold: 2 },
+          ]),
+        ),
+      ),
+      take(
+        ...captioned('The imp spits. Hell etiquette.', [
+          ...iStart(),
+          { actors: iScene(I_HOVER, [IMP_HERE], [spit(-5)]), hold: 1 },
+          { actors: iScene(I_HOVER, [IMP_HERE], [spit(-9)]), hold: 1 },
+          { actors: iScene(I_HOVER, [IMP_HERE], [], armed(), SLIMED), texts: [hiss('PTOO.')], hold: 2 },
+          { actors: iScene(I_ENTER, [IMP_HERE], [], armed(), SLIMED), hold: 1 },
+          { actors: iScene(null), texts: [hiss('HSS HSS.')], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The imp fireballs the hand. Twice. Direct hit.', [
+          ...iStart(),
+          ...impThrows(),
+          ...impThrows(SCORCHED).slice(0, 2),
+          { actors: iScene(I_ENTER, [IMP_HERE], [I_BOOM], armed(), SCORCHED), hold: 1 },
+          { actors: iScene(null), texts: [hiss('GRAAAH.')], hold: 3 },
+        ]),
+      ),
+      needing(
+        ['marine'],
+        take(
+          ...captioned('The imp hides behind the marine. Great.', [
+            ...iStart(),
+            { actors: [HIDING, ...armed(), ...youAtImp(I_HOVER)], texts: [hiss('HSS.', -8), aside('REALLY.')], hold: 2 },
+            { actors: [HIDING, ...armed(), ...youAtImp(I_HOVER)], texts: [aside('GET OFF.')], hold: 2 },
+            { actors: [HIDING, ...armed(), ...youAtImp(I_ENTER)], hold: 1 },
+            { actors: [HIDING, ...armed()], texts: [aside('...')], hold: 2 },
+            { actors: iScene(null), texts: [hiss('HSS.')], hold: 1 },
+          ]),
+        ),
+      ),
+      needing(
+        ['cyber'],
+        take(
+          ...captioned('The imp calls the Cyberdemon. Overkill.', [
+            ...iStart(),
+            { actors: iScene(I_HOVER), texts: [hiss('GRAAAH!')], hold: 2 },
+            { actors: iScene(I_HOVER, [IMP_HERE], cyberFogOf(1), armed('walk', -2)), hold: 1 },
+            { actors: iScene(I_ENTER, [IMP_HERE, CYBER_HERE], cyberFogOf(2), backed()), hold: 1 },
+            { actors: iScene(null, [IMP_HERE, CYBER_HERE], [], nervous()), texts: [roar('...')], hold: 2 },
+            { actors: iScene(null, [IMP_HERE, CYBER_HERE], [], nervous()), texts: [roar('WHO.')], hold: 2 },
+            { actors: iScene(null, [IMP_HERE], cyberFogOf(2), armed('walk', -2)), hold: 1 },
+            { actors: iScene(null), texts: [hiss('HSS HSS.')], hold: 2 },
+          ]),
+        ),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The imp has left. Through the floor, somehow.', [
+          ...iStart(),
+          { actors: iScene(I_HOVER), texts: [hiss('ENOUGH.')], hold: 2 },
+          { actors: iScene(I_HOVER), texts: [hiss('BYE.')], hold: 1 },
+          { actors: iScene(null, [impFog(1)]), hold: 1 },
+          { actors: iScene(null, [impFog(2)]), hold: 1 },
+          { actors: iScene(null, []), texts: [aside('?')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('One last fireball. Then the imp walks off.', [
+          ...iStart(),
+          ...impThrows(),
+          { actors: iScene(I_ENTER, [IMP_HERE], [], armed(), SCORCHED), texts: [hiss('HSS.')], hold: 1 },
+          { actors: iScene(null, [impAt('imp', 4, 0, { offstage: true })]), hold: 1 },
+          { actors: iScene(null, [impAt('imp', 9, 0, { offstage: true })]), hold: 1 },
+          { actors: iScene(null, []), texts: [aside('...')], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The imp's rest: the marine keeps an eye on the spot. And on the other spot.
+  rest: loop(
+    { actors: armed(), hold: 8 },
+    { actors: armed(), texts: [aside('...')], hold: 6 },
+    { actors: turned(), hold: 6 },
+    { actors: armed(), texts: [aside('?')], hold: 6 },
+  ),
+}
+
+// 3. Taunt the Cyberdemon. The bare fist shakes at it from the ceiling; it
+// stands where it teleports in for a par time, the marine backed off from it.
+const TX = 22
+const T_Y = -20
+const AIM = cyberAt('cyberAim')
+const shake = (shift: 0 | 2, hand: Partial<Actor> = {}): Actor => fist(TX + shift, T_Y, hand)
+/** A rocket out of the raised cannon, `dy` from the hero's top; the burst at the fist. */
+const rocket = (dy: number): Actor => at('rocket', 20, dy, { fixed: true })
+const T_BOOM = at('boom', TX - 2, T_Y, { fixed: true })
+const steam = (x: number, y: number): Actor => at('puff', x, y, { fixed: true, swap: { F: 'M', O: 'O' } })
+const rubble = (x: number, y: number): Actor => at('puff', x, y, { fixed: true, swap: { F: 'm', O: 'M' } })
+const tScene = (shift: 0 | 2 | null, cyber: Actor[] = [CYBER_HERE], more: Actor[] = [], crew: Actor[] = backed(), hand: Partial<Actor> = {}): Actor[] => [
+  ...crew,
+  ...cyber,
+  ...(shift === null ? [] : [shake(shift, hand)]),
+  ...more,
+]
+const tStart = (): Frame[] => [
+  { actors: tScene(0), hold: 1 },
+  { actors: tScene(2), hold: 1 },
+  { actors: tScene(0), hold: 1 },
+  { actors: tScene(2), hold: 1 },
+]
+/** The cannon comes up, a rocket goes up, the fist burns. */
+const firesUp = (hand: Partial<Actor> = {}): Frame[] => [
+  { actors: tScene(0, [AIM], [], backed(), hand), hold: 1 },
+  { actors: tScene(0, [AIM], [rocket(-12)], backed(), hand), hold: 1 },
+  { actors: tScene(0, [AIM], [T_BOOM], backed(), SCORCHED), hold: 1 },
+]
+
+const tauntCyber: ThemeAction = {
+  id: 'cyber',
+  label: 'TAUNT BOSS',
+  restLabel: '(BOSS GONE)',
+  gone: ['cyber'],
+  needs: ['cyber'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Taunted the Cyberdemon. It did not notice.', [
+          ...tStart(),
+          { actors: tScene(0), texts: [roar('...')], hold: 3 },
+          { actors: tScene(2), texts: [gulp('...')], hold: 2 },
+          { actors: tScene(null), hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The Cyberdemon looks down. Way down.', [
+          ...tStart(),
+          { actors: tScene(0), texts: [roar('?')], hold: 2 },
+          { actors: tScene(2, [CYBER_HERE], [], nervous()), texts: [roar('HM.')], hold: 3 },
+          { actors: tScene(null, [CYBER_HERE], [], nervous()), hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The Cyberdemon snorts. Steam, probably.', [
+          ...tStart(),
+          { actors: tScene(0, [CYBER_HERE], [steam(23, -4), steam(31, -4)]), hold: 1 },
+          { actors: tScene(2, [CYBER_HERE], [steam(21, -6), steam(33, -6)]), hold: 1 },
+          { actors: tScene(0), texts: [roar('HMPH.')], hold: 3 },
+          { actors: tScene(null), hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('Taunted. The Cyberdemon takes a step. One.', [
+          ...tStart(),
+          { actors: tScene(0, [cyberAt('cyberStep')]), texts: [roar('THUD.')], hold: 1 },
+          { actors: tScene(2), texts: [roar('THUD.')], hold: 1 },
+          { actors: tScene(0, [CYBER_HERE], [], nervous()), texts: [gulp('UH.')], hold: 3 },
+          { actors: tScene(null, [CYBER_HERE], [], nervous()), hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The Cyberdemon counts to ten. Slowly.', [
+          ...tStart(),
+          { actors: tScene(0), texts: [roar('ONE.')], hold: 2 },
+          { actors: tScene(2), texts: [roar('TWO.')], hold: 2 },
+          { actors: tScene(0), texts: [roar('THREE.')], hold: 2 },
+          { actors: tScene(null), texts: [roar('...')], hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The Cyberdemon is not paid enough for this.', [
+          ...tStart(),
+          { actors: tScene(0), texts: [roar('...')], hold: 2 },
+          { actors: tScene(2, [CYBER_HERE], [steam(23, -4), steam(31, -4)]), texts: [roar('SIGH.')], hold: 3 },
+          { actors: tScene(null), texts: [gulp('SAME.')], hold: 2 },
+        ], 4),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The Cyberdemon roars. The marine steps back.', [
+          ...tStart(),
+          { actors: tScene(0, [CYBER_HERE], [], backed('walk', -1)), texts: [roar('RAAAGH!')], hold: 2 },
+          { actors: tScene(2, [CYBER_HERE], [], [...backed('stand', -1), ...sweatAt(-5)]), texts: [roar('RAAAGH!')], hold: 2 },
+          { actors: tScene(null, [CYBER_HERE], [], [...backed('stand', -1), ...sweatAt(-5)]), texts: [gulp('...')], hold: 2 },
+          { actors: tScene(null), hold: 1 },
+        ], 4),
+      ),
+      take(
+        ...captioned('A rocket. At the ceiling. The hand retreats.', [
+          ...tStart(),
+          ...firesUp(),
+          { actors: tScene(null, [AIM]), texts: [roar('NEXT.')], hold: 2 },
+          { actors: tScene(null), texts: [gulp('...')], hold: 2 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The Cyberdemon stomps. Everything jumps.', [
+          ...tStart(),
+          { actors: tScene(0, [cyberAt('cyberStep', 0, -1)]), hold: 1 },
+          { actors: tScene(2, [CYBER_HERE], [], mine([hero('walk', -4), gun(-4, -1)])), texts: [roar('THUD.')], hold: 1 },
+          { actors: tScene(0), texts: [roar('THUD.')], hold: 1 },
+          { actors: tScene(null, [CYBER_HERE], [], nervous()), texts: [gulp('!')], hold: 3 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The Cyberdemon points. At you. Specifically.', [
+          ...tStart(),
+          { actors: tScene(0, [AIM]), hold: 1 },
+          { actors: tScene(2, [AIM]), texts: [roar('YOU.')], hold: 3 },
+          { actors: tScene(null, [AIM]), texts: [roar('YOU.')], hold: 1 },
+          { actors: tScene(null), texts: [gulp('...')], hold: 2 },
+        ], 4),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('Rockets. Plural. The hand is leaving.', [
+          ...tStart(),
+          ...firesUp(),
+          { actors: tScene(0, [AIM], [rocket(-12)], backed(), SCORCHED), hold: 1 },
+          { actors: tScene(null, [AIM], [T_BOOM]), hold: 1 },
+          { actors: tScene(null, [AIM]), texts: [roar('BEGONE.')], hold: 3 },
+          { actors: tScene(null), hold: 1 },
+        ], 4),
+      ),
+      take(
+        ...captioned('Stomp. The ceiling comes down on the hand.', [
+          ...tStart(),
+          { actors: tScene(0, [cyberAt('cyberStep', 0, -1)]), texts: [roar('THUD.')], hold: 1 },
+          { actors: tScene(2, [CYBER_HERE], [rubble(19, -17), rubble(31, -15), rubble(25, -14)]), hold: 1 },
+          { actors: tScene(null, [CYBER_HERE], [rubble(19, -12), rubble(31, -11), rubble(25, -10)]), hold: 1 },
+          { actors: tScene(null), texts: [roar('HA.')], hold: 2 },
+          { actors: tScene(null, [CYBER_HERE], [], nervous()), texts: [gulp('...')], hold: 2 },
+        ], 4),
+      ),
+      needing(
+        ['marine'],
+        take(
+          ...captioned('Ceasefire. Everyone fires at the ceiling.', [
+            ...tStart(),
+            { actors: tScene(0, [AIM], [], unarmed(-6)), hold: 1 },
+            { actors: tScene(0, [AIM], [...flashUp('flash1', -6), rocket(-12)], raised(-6)), hold: 1 },
+            { actors: tScene(0, [AIM], [...flashUp('flash2', -6), T_BOOM], raised(-6), SCORCHED), hold: 1 },
+            { actors: tScene(null, [AIM], [], raised(-6)), texts: [roar('TRUCE.')], hold: 2 },
+            { actors: tScene(null, [CYBER_HERE], [], unarmed(-6)), hold: 1 },
+            { actors: tScene(null), texts: [gulp('TRUCE.')], hold: 2 },
+          ], 4),
+        ),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The Cyberdemon leaves. Rocket first, then fog.', [
+          ...tStart(),
+          ...firesUp(),
+          { actors: tScene(null, [AIM]), texts: [roar('ENOUGH.')], hold: 2 },
+          { actors: tScene(null, [CYBER_HERE], cyberFogOf(1)), hold: 1 },
+          { actors: tScene(null, [], cyberFogOf(2), backed('walk', 2)), hold: 1 },
+          { actors: tScene(null, [], [], armed()), texts: [aside('...')], hold: 3 },
+        ], 4),
+      ),
+      take(
+        ...captioned('The Cyberdemon has had enough. Fog. Gone.', [
+          ...tStart(),
+          { actors: tScene(0), texts: [roar('NO.')], hold: 2 },
+          { actors: tScene(2), texts: [roar('JUST NO.')], hold: 2 },
+          { actors: tScene(null, [CYBER_HERE], cyberFogOf(1)), hold: 1 },
+          { actors: tScene(null, [], cyberFogOf(2), backed('walk', 2)), hold: 1 },
+          { actors: tScene(null, [], [], armed()), texts: [aside('PHEW.')], hold: 3 },
+        ], 4),
+      ),
+    ],
+  },
+  // The Cyberdemon's rest: the marine watches the spot. Was that fog?
+  rest: loop(
+    { actors: armed(), hold: 8 },
+    { actors: [...armed(), ...cyberFog(2)], texts: [aside('!')], hold: 3 },
+    { actors: armed(), hold: 6 },
+    { actors: [...armed(), ...sweatAt(0)], texts: [aside('...')], hold: 6 },
+  ),
+}
+
+const actions: ThemeAction[] = [pokeMarine, pokeImp, tauntCyber]
+
 const SLAYER_POSES = { stand: 'slayerStand', walk: 'slayerWalk', attack: 'slayerAttack', itemGet: 'slayerItemGet', sleep: 'slayerSleep', use: 'slayerUse' }
 const SENTINEL_POSES = { stand: 'sentinelStand', walk: 'sentinelWalk', attack: 'sentinelAttack', itemGet: 'sentinelItemGet', sleep: 'sentinelSleep', use: 'sentinelUse' }
 // A gun held up rests on the raised fist, which is at one height for both: the crown adds nothing to it.
@@ -919,6 +1622,7 @@ export const doom: Theme = {
   cold,
   overkill,
   events,
+  actions,
   scene: {
     height: 40,
     anchor: { x: 8, y: 20 },

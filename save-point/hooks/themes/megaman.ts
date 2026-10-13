@@ -11,7 +11,7 @@
 // the helper bot and the two big forms have rows of their own.
 
 import { at, hero, loop, once, weapon } from './kit'
-import type { Actor, HeroTier, SceneText, Theme } from './types'
+import type { Actor, Animation, Frame, HeroTier, SceneText, Theme, ThemeAction } from './types'
 
 const pixels = {
   // The Blue Bomber
@@ -560,6 +560,16 @@ const sprites: Theme['sprites'] = {
   hitSpark: sp(['W..W..W', '.W.W.W.', '..WWW..', 'WWWOWWW', '..WWW..', '.W.W.W.', 'W..W..W']),
   sparkle: sp(['..W..', '..c..', 'WcWcW', '..c..', '..W..']),
   sweat: sp(['.D.', '.c.', 'DcD', 'DWD', '.D.']),
+  // You: a white glove with a red cuff, from the top of the stage. A finger to poke, a palm to pat.
+  finger: sp(['..RRRRRR.', '..RRRRRR.', '..KWWWWK.', '.KWWWWWWK', 'KWWWWWWWK', 'KWWWWWWWK', '.KWWWWWWK', '..KKKKWWK', '.....KWWK', '.....KWWK', '......KK.']),
+  palm: sp(['...RRRRRR.', '...RRRRRR.', '...KWWWWK.', '..KWWWWWWK', '.KKWWWWWWK', 'KWWWWWWWWK', 'KWWWWWWWWK', '.KKWWWWWWK', '..KWWWWWK.', '...KWWWWK.', '....KKKK..']),
+  // Rush wagging (the tail up), and Rush Jet's flames under him.
+  rushWag: sp(['...K.K........', '..KRKRK.......', '.KRRRRRK....KK', 'KRRWKRRK....KR', 'KKRRRRRK....KR', '.KKKKRRRKKKKRK', '....KmmRRRRRK.', '....KRRRRRRRK.', '....KRRRRRRK..', '...KRRKKKRRK..', '...KKK..KKK...']),
+  jet: sp(['O.O.O', 'eOeOe', '.e.e.']),
+  // The Met mid-step, glaring, and its pellet.
+  metStep: sp(['..GGGG..', '.GGGGGG.', 'GGGGGGGG', 'oooooooo', '.KWKKWK.', '.KKKKKK.', 'OO....OO']),
+  metGlare: sp(['..GGGG..', '.GGGGGG.', 'GGGGGGGG', 'oooooooo', '.KRKKRK.', '.KKKKKK.', '.OO..OO.']),
+  pellet: sp(['.e.', 'eWe', '.e.']),
 }
 
 // ---------------------------------------------------------------------------
@@ -767,6 +777,695 @@ const events: Theme['events'] = {
   ),
 }
 
+// ---------------------------------------------------------------------------
+// Actions: the buttons under the scene. You are a white glove with a red cuff
+// from the top of the stage: a finger to poke and knock, a palm to pat. Each
+// press plays one of the tier's takes, picked at random; the target's patience
+// wears down with repeated presses (see `pressAction`).
+// ---------------------------------------------------------------------------
+
+/** A reaction: one-shot, every frame held twice as long as written (a line stays about a second at 6 fps). */
+const take = (...frames: Frame[]): Animation => once(...frames.map(f => ({ ...f, hold: 2 * Math.max(1, f.hold ?? 1) })))
+/** The same caption on every frame from `from` on. */
+const captioned = (caption: string, frames: Frame[], from = 2): Frame[] => frames.map((f, k) => (k >= from ? { ...f, caption } : f))
+/** A take that is only picked while these are present. */
+const needing = (needs: string[], anim: Animation): Animation => ({ ...anim, needs })
+/** The glove at `y`; past `enter` it is still coming in from above. */
+const glove = (sprite: 'finger' | 'palm', x: number, y: number, enter: number, opts: Partial<Actor> = {}): Actor => at(sprite, x, y, { ...(y <= enter ? { offstage: true } : {}), ...opts })
+// Who is who, for the rests: whatever robot is on stage is `robot`, the dog is `rush`, the hard hat is `met`.
+const robot = (pose: string, x = 0, y = 0, swap?: Record<string, string>): Actor => ({ ...hero(pose, x, y, swap), gone: 'robot' })
+const robotOf = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'robot' }))
+const ROBOT_SWEAT = robotOf(sweat)
+const GOLD = '#fcc400'
+const RED = '#fc5838'
+const CYAN = '#a8f0fc'
+/** The robot's line beside its head, lifted clear of the big forms (as the thinking dots are). */
+const says = (text: string, y = -2, color = '#fcfcfc'): SceneText => ({ ...txt(text, 17, y, color, { lift: true }), gone: 'robot' })
+const RED_BEAM = { swap: { c: 'R' } }
+
+// 2. Pet Rush. He stands past the robot facing it; the palm comes down on his
+// head. The palm is scenery here (it does not rise with the big forms).
+const RX = 20
+const RUSH_Y = 5
+const R_ENTER = -24
+const R_HOVER = -12
+const R_PAT = -6
+/** Rush (or something in his place), as scenery and his. */
+function rushAt(sprite = 'rush', x = RX, y = RUSH_Y, opts: Partial<Actor> = {}): Actor {
+  return at(sprite, x, y, { fixed: true, gone: 'rush', ...opts })
+}
+const RUSH_DOG = rushAt()
+const RUSH_WAG = rushAt('rushWag')
+/** Rush Jet's flames under him at (x, y). */
+const jet = (x: number, y: number, opts: Partial<Actor> = {}): Actor => rushAt('jet', x + 5, y + 11, opts)
+/** Rush's line, over his back and right of the palm. */
+function woof(text: string, x = 29, y = 0, color = '#fcfcfc'): SceneText {
+  return { ...txt(text, x, y, color), gone: 'rush' }
+}
+const rushScene = (y: number | null, dog: Actor[] = [RUSH_DOG], more: Actor[] = [], who: Actor[] = [robot('stand')], hx = RX - 1): Actor[] => [
+  ...who,
+  ...dog,
+  ...(y === null ? [] : [glove('palm', hx, y, R_ENTER, { fixed: true })]),
+  ...more,
+]
+const rStart = (dog: Actor[] = [RUSH_DOG]): Frame[] => [
+  { actors: rushScene(R_ENTER, dog), hold: 1 },
+  { actors: rushScene(R_HOVER, dog), hold: 1 },
+  { actors: rushScene(R_PAT, dog), hold: 1 },
+]
+/** Rush beams out, red, as he does on errands; the robot is left looking at the spot. */
+const RUSH_BEAMS_OUT: Frame[] = [
+  { actors: rushScene(null, [rushAt('beamLand', 23, 11, RED_BEAM)]), hold: 1 },
+  { actors: rushScene(null, [rushAt('beam', 25, -4, RED_BEAM)]), hold: 1 },
+  { actors: rushScene(null, [rushAt('beam', 25, -30, { ...RED_BEAM, offstage: true })]), hold: 1 },
+  { actors: rushScene(null, []), texts: [says('...')], hold: 2 },
+  { actors: rushScene(null, [], ROBOT_SWEAT), texts: [says('RUSH?')], hold: 3 },
+]
+/** Rush Jet: he flies off up and to the right. */
+const RUSH_JETS_OUT: Frame[] = [
+  { actors: rushScene(null, [rushAt('rushWag', 22, -4), jet(22, -4)]), hold: 1 },
+  { actors: rushScene(null, [rushAt('rush', 24, -14), jet(24, -14)]), hold: 1 },
+  { actors: rushScene(null, [rushAt('rushWag', 30, -24, { offstage: true }), jet(30, -24, { offstage: true })]), hold: 1 },
+  { actors: rushScene(null, []), texts: [says('...')], hold: 2 },
+  { actors: rushScene(null, [], ROBOT_SWEAT), texts: [says('RUSH!')], hold: 3 },
+]
+// 1. Poke the robot. The finger comes down on the helmet from the top of the
+// scene (it rises with the big forms, as a prop over the head does): in from
+// above, a hover, the poke, then the reaction.
+const AX = 1
+const A_ENTER = -22
+const A_HOVER = -13
+const A_POKE = -11
+/** The poke's sparkle on the helmet, at the fingertip. */
+const POKED = at('sparkle', AX + 4, -4)
+const robotScene = (y: number | null, who: Actor[], more: Actor[] = []): Actor[] => [...who, ...(y === null ? [] : [glove('finger', AX, y, A_ENTER)]), ...more]
+const aStart = (who: Actor[] = [robot('stand')]): Frame[] => [
+  { actors: robotScene(A_ENTER, who), hold: 1 },
+  { actors: robotScene(A_HOVER, who), hold: 1 },
+  { actors: robotScene(A_POKE, who, [POKED]), hold: 1 },
+]
+/** The robot beams out, as a robot does between stages: what the first snapped take ends with. */
+const ROBOT_BEAMS_OUT: Frame[] = [
+  { actors: [at('beamLand', 4, 11, { gone: 'robot' })], hold: 1 },
+  { actors: [{ ...beamDown(), gone: 'robot' }], hold: 1 },
+  { actors: [{ ...beamDown(-4), gone: 'robot' }], hold: 1 },
+  { actors: [], hold: 1 },
+  { actors: [], texts: [txt('...', 17, -2)], hold: 3 },
+]
+/** The robot walks to the ladder and climbs off the top of the stage: what the second snapped take ends with. */
+const ROBOT_CLIMBS_OUT: Frame[] = [
+  { actors: [robot('walk', -6)], hold: 1 },
+  { actors: [{ ...robot('walk', -12), offstage: true }], hold: 1 },
+  { actors: [{ ...robot('itemGet', -12, -8), offstage: true }], hold: 1 },
+  { actors: [{ ...robot('itemGet', -12, -18), offstage: true }], hold: 1 },
+  { actors: [{ ...robot('itemGet', -12, -30), offstage: true }], hold: 1 },
+  { actors: [{ ...robot('itemGet', -12, -44), offstage: true }], hold: 1 },
+  { actors: [], texts: [txt('...', 17, -2)], hold: 3 },
+]
+const pokeRobot: ThemeAction = {
+  id: 'robot',
+  label: 'POKE ROBOT',
+  restLabel: '(ROBOT GONE)',
+  gone: ['robot'],
+  needs: ['robot'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked the robot. The robot beeped.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('stand')]), texts: [says('BEEP.')], hold: 3 },
+          { actors: robotScene(A_POKE, [robot('stand')], [POKED]), texts: [says('BEEP.')], hold: 1 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('BEEP BEEP.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Diagnostic complete: the robot is ticklish.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('walk')]), texts: [says('HA.')], hold: 1 },
+          { actors: robotScene(A_POKE, [robot('itemGet')], [POKED]), texts: [says('HA HA.')], hold: 2 },
+          { actors: robotScene(A_HOVER, [robot('itemGet')]), texts: [says('ERROR: TICKLISH.')], hold: 3 },
+          { actors: robotScene(null, [robot('stand'), ...ROBOT_SWEAT]), texts: [says('ERROR: TICKLISH.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The robot checks its helmet for dents.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('itemGet')]), texts: [says('?', -4, GOLD)], hold: 2 },
+          { actors: robotScene(null, [robot('itemGet')]), texts: [says('...')], hold: 2 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('NO DENTS.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked. The robot reboots. Please wait.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('sleep')]), texts: [says('REBOOTING', -2, CYAN)], hold: 2 },
+          { actors: robotScene(A_HOVER, [robot('sleep')]), texts: [says('REBOOTING..', -2, CYAN)], hold: 2 },
+          { actors: robotScene(null, [robot('sleep')]), texts: [says('REBOOTING....', -2, CYAN)], hold: 2 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('OK.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The robot took you for a Met. Nearly fired.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('attack')]), texts: [says('!', -4, GOLD)], hold: 2 },
+          { actors: robotScene(A_HOVER, [robot('attack')]), texts: [says('OH. IT IS YOU.')], hold: 3 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('OH. IT IS YOU.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Scanned the finger. Not a weapon. Yet.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('stand')], [at('sparkle', AX + 10, -12)]), texts: [says('SCANNING...', -2, CYAN)], hold: 2 },
+          { actors: robotScene(A_HOVER, [robot('stand')], [at('sparkle', AX - 5, -12)]), texts: [says('SCANNING...', -2, CYAN)], hold: 2 },
+          { actors: robotScene(A_HOVER, [robot('stand')]), texts: [says('NOT A WEAPON.')], hold: 3 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('YET.')], hold: 2 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The robot beeps. Angrily, in red.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('stand')]), texts: [says('BEEP.', -2, RED)], hold: 1 },
+          { actors: robotScene(A_POKE, [robot('stand')], [POKED]), texts: [says('BEEP BEEP.', -2, RED)], hold: 1 },
+          { actors: robotScene(A_HOVER, [robot('stand')]), texts: [says('BEEP BEEP BEEP.', -2, RED)], hold: 3 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('BEEP BEEP BEEP.', -2, RED)], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The robot files a bug report. Subject: you.', [
+          ...aStart(),
+          { actors: robotScene(A_ENTER, [robot('itemGet'), at('disk', DISK.x, DISK.y, { gone: 'robot' })]), texts: [says('BUG REPORT:')], hold: 3 },
+          { actors: robotScene(null, [robot('itemGet'), at('disk', DISK.x, DISK.y, { gone: 'robot' })]), texts: [says('SUBJECT: YOU.')], hold: 3 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('FILED.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The robot headbutts the finger. Ow.', [
+          { actors: robotScene(A_ENTER, [robot('stand')]), hold: 1 },
+          { actors: robotScene(A_HOVER, [robot('stand')]), hold: 2 },
+          { actors: robotScene(A_HOVER, robotOf(leap('walk', [0, -8], [0, -6])), [at('hitSpark', AX + 3, -11)]), hold: 1 },
+          { actors: robotScene(A_ENTER, robotOf(leap('walk', [0, -4], [0, -3]))), texts: [says('OW.', -6)], hold: 1 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('OW.')], hold: 3 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('WORTH IT.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Poke limit reached. The robot has a counter.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('stand')]), texts: [says('!', -4, GOLD)], hold: 1 },
+          { actors: robotScene(A_ENTER, [robot('stand')]), hold: 1 },
+          { actors: robotScene(null, [robot('stand')]), texts: [{ ...banner(' POKE LIMIT REACHED ', 0, -14), gone: 'robot' }], hold: 3 },
+          { actors: robotScene(null, [robot('stand'), ...ROBOT_SWEAT]), texts: [{ ...banner(' POKE LIMIT REACHED ', 0, -14), gone: 'robot' }, says('...')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The robot would like you to stop. Beep.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('stand'), ...ROBOT_SWEAT]), texts: [says('PLEASE STOP.')], hold: 3 },
+          { actors: robotScene(A_POKE, [robot('stand'), ...ROBOT_SWEAT], [POKED]), texts: [says('PLEASE STOP.')], hold: 1 },
+          { actors: robotScene(null, [robot('stand'), ...ROBOT_SWEAT]), texts: [says('BEEP.')], hold: 3 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      needing(['rush'], take(
+        ...captioned('The robot calls Rush. Rush has opinions.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('itemGet')]), texts: [says('RUSH!')], hold: 2 },
+          { actors: robotScene(A_HOVER, [robot('itemGet'), rushAt('beamLand', 23, 11, RED_BEAM)]), texts: [says('RUSH!')], hold: 1 },
+          { actors: robotScene(A_HOVER, [robot('stand'), rushAt('beam', 25, -4, RED_BEAM)]), hold: 1 },
+          { actors: robotScene(A_HOVER, [robot('stand'), RUSH_DOG]), texts: [woof('WOOF!', 29, 0, RED)], hold: 2 },
+          { actors: robotScene(A_ENTER, [robot('stand'), RUSH_WAG]), texts: [woof('WOOF WOOF', 29, 0, RED)], hold: 2 },
+          { actors: robotScene(null, [robot('stand'), RUSH_DOG]), texts: [says('GOOD BOY.')], hold: 3 },
+        ]),
+      )),
+      take(
+        ...captioned('A warning shot. The next one is not.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('attack')]), texts: [says('!', -4, GOLD)], hold: 1 },
+          { actors: robotScene(A_HOVER, [robot('attack'), { ...fire(16), gone: 'robot' }]), hold: 1 },
+          { actors: robotScene(A_ENTER, [robot('attack'), { ...fire(22), gone: 'robot' }]), texts: [says('WARNING SHOT.')], hold: 2 },
+          { actors: robotScene(null, [robot('attack'), { ...fire(36), gone: 'robot', offstage: true }]), texts: [says('WARNING SHOT.')], hold: 1 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('NEXT ONE COUNTS.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The robot charges up. Aimed at the finger.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('itemGet', 0, 0, CHARGE)]), hold: 1 },
+          { actors: robotScene(A_HOVER, [robot('itemGet')]), hold: 1 },
+          { actors: robotScene(A_HOVER, [robot('itemGet', 0, 0, CHARGE)]), texts: [says('CHARGING...', -2, CYAN)], hold: 1 },
+          { actors: robotScene(A_ENTER, [robot('itemGet'), { ...heldShot(), gone: 'robot' }]), texts: [says('CHARGING...', -2, CYAN)], hold: 2 },
+          { actors: robotScene(null, [robot('itemGet'), { ...heldShot(), gone: 'robot' }]), texts: [says('LEAVE.')], hold: 3 },
+          { actors: robotScene(null, [robot('stand')]), hold: 1 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The robot beamed out. Try another stage.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('stand')]), texts: [says('NOPE.')], hold: 2 },
+          { actors: robotScene(null, [robot('stand')]), texts: [says('NOPE.')], hold: 1 },
+          { actors: robotScene(null, [robot('itemGet')]), hold: 1 },
+          ...ROBOT_BEAMS_OUT,
+        ]),
+      ),
+      take(
+        ...captioned('The robot took the ladder. Not coming back.', [
+          ...aStart(),
+          { actors: robotScene(A_HOVER, [robot('stand')]), texts: [says('THAT IS IT.')], hold: 2 },
+          { actors: robotScene(A_ENTER, [robot('stand')]), texts: [says('I QUIT.')], hold: 2 },
+          ...ROBOT_CLIMBS_OUT,
+        ]),
+      ),
+    ],
+  },
+  // The robot's rest: an empty stage, with Rush waiting on it.
+  rest: loop(
+    { actors: [RUSH_DOG], hold: 8 },
+    { actors: [RUSH_DOG], texts: [woof('?', 29, 0, GOLD)], hold: 6 },
+    { actors: [rushAt('rush', RX, RUSH_Y, { flip: true })], hold: 8 },
+    { actors: [RUSH_DOG], texts: [woof('WHINE.')], hold: 6 },
+  ),
+}
+
+const petRush: ThemeAction = {
+  id: 'rush',
+  label: 'PET RUSH',
+  restLabel: '(RUSH GONE)',
+  gone: ['rush'],
+  needs: ['rush'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Petted Rush. Rush approves.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [RUSH_WAG]), texts: [woof('WOOF!')], hold: 2 },
+          { actors: rushScene(R_HOVER, [RUSH_DOG]), texts: [woof('WOOF!')], hold: 1 },
+          { actors: rushScene(R_PAT, [RUSH_WAG]), hold: 1 },
+          { actors: rushScene(null, [RUSH_DOG]), hold: 1 },
+          { actors: rushScene(null, [RUSH_WAG]), texts: [woof('WOOF.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Rush rolls over. Belly rubs are mandatory.', [
+          ...rStart(),
+          { actors: rushScene(R_HOVER, [rushAt('rush', RX, RUSH_Y, { flipY: true })]), hold: 2 },
+          { actors: rushScene(R_PAT, [rushAt('rush', RX, RUSH_Y, { flipY: true })]), texts: [woof('...')], hold: 2 },
+          { actors: rushScene(R_HOVER, [rushAt('rush', RX, RUSH_Y, { flipY: true })]), texts: [woof('MORE.')], hold: 2 },
+          { actors: rushScene(R_PAT, [rushAt('rush', RX, RUSH_Y, { flipY: true })]), texts: [woof('MORE.')], hold: 2 },
+          { actors: rushScene(null, [rushAt('rush', RX, RUSH_Y, { flipY: true })]), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Rush wags. Rush Jet engages by accident.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [RUSH_WAG]), hold: 1 },
+          { actors: rushScene(R_HOVER, [rushAt('rush', RX, 1), jet(RX, 1)]), hold: 1 },
+          { actors: rushScene(R_ENTER, [rushAt('rushWag', RX, -8), jet(RX, -8)]), texts: [woof('?', 29, -12, GOLD)], hold: 2 },
+          { actors: rushScene(null, [rushAt('rush', RX, -8), jet(RX, -8)]), texts: [woof('WOOF?', 29, -12)], hold: 2 },
+          { actors: rushScene(null, [rushAt('rushWag', RX, 1)]), hold: 1 },
+          { actors: rushScene(null, [RUSH_DOG]), texts: [woof('OOPS.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Rush brings a bolt. Keep it.', [
+          ...rStart(),
+          { actors: rushScene(R_HOVER, [RUSH_WAG]), texts: [woof('WOOF!')], hold: 1 },
+          { actors: rushScene(R_ENTER, [rushAt('rush', 24, RUSH_Y), rushAt('boltDrop', 18, 9)]), hold: 2 },
+          { actors: rushScene(null, [rushAt('rushWag', 24, RUSH_Y), rushAt('boltDrop', 18, 9), rushAt('sparkle', 16, 6)]), texts: [woof('WOOF.', 32)], hold: 3 },
+          { actors: rushScene(null, [rushAt('rush', 24, RUSH_Y), rushAt('boltDrop', 18, 9)]), texts: [says('THANKS.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Rush licks the hand. Twice.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [rushAt('rush', RX, 3)]), texts: [woof('SLURP')], hold: 2 },
+          { actors: rushScene(R_PAT, [RUSH_DOG]), hold: 1 },
+          { actors: rushScene(R_PAT, [rushAt('rushWag', RX, 3)]), texts: [woof('SLURP', 30, -2)], hold: 2 },
+          { actors: rushScene(R_ENTER, [RUSH_WAG]), hold: 1 },
+          { actors: rushScene(null, [RUSH_DOG]), texts: [woof('...')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Rush sniffs the hand. Smells like bolts.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [rushAt('rush', RX, 4)]), texts: [woof('SNIFF')], hold: 2 },
+          { actors: rushScene(R_PAT, [RUSH_DOG]), hold: 1 },
+          { actors: rushScene(R_PAT, [rushAt('rush', RX, 4)]), texts: [woof('SNIFF')], hold: 2 },
+          { actors: rushScene(R_HOVER, [RUSH_WAG]), texts: [woof('BOLTS?')], hold: 3 },
+          { actors: rushScene(null, [RUSH_WAG]), texts: [woof('BOLTS?')], hold: 1 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('Rush growls. The hand reconsiders.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [RUSH_DOG]), texts: [woof('GRRR.', 29, 0, RED)], hold: 2 },
+          { actors: rushScene(R_HOVER, [RUSH_DOG]), texts: [woof('GRRRR.', 29, 0, RED)], hold: 2 },
+          { actors: rushScene(R_ENTER, [RUSH_DOG]), texts: [woof('GRRRR.', 29, 0, RED)], hold: 2 },
+          { actors: rushScene(null, [RUSH_DOG]), texts: [woof('HMPH.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Rush Coil. The hand goes up. Way up.', [
+          { actors: rushScene(R_ENTER, [RUSH_DOG, rushAt('coilLow', 28, 7)], [], undefined, 28), hold: 1 },
+          { actors: rushScene(R_HOVER, [RUSH_DOG, rushAt('coilLow', 28, 7)], [], undefined, 28), hold: 1 },
+          { actors: rushScene(R_PAT, [RUSH_DOG, rushAt('coilLow', 28, 7)], [], undefined, 28), hold: 2 },
+          { actors: rushScene(-16, [RUSH_DOG, rushAt('coilHigh', 28, 3)], [], undefined, 28), texts: [woof('BOING', 20, -8)], hold: 1 },
+          { actors: rushScene(R_ENTER, [RUSH_WAG, rushAt('coilHigh', 28, 3)], [], undefined, 28), texts: [woof('BOING', 20, -8)], hold: 2 },
+          { actors: rushScene(null, [RUSH_DOG, rushAt('coilLow', 28, 7)]), hold: 1 },
+          { actors: rushScene(null, [RUSH_WAG, rushAt('coilLow', 28, 7)]), texts: [woof('WOOF.')], hold: 3 },
+        ]),
+      ),
+      needing(['robot'], take(
+        ...captioned('Rush hides behind the robot. Mostly.', [
+          { actors: rushScene(R_ENTER), hold: 1 },
+          { actors: rushScene(R_HOVER, [rushAt('rush', 6, RUSH_Y)]), hold: 1 },
+          { actors: rushScene(R_HOVER, [], [], [rushAt('rush', -8, RUSH_Y, { flip: true }), robot('stand')]), hold: 1 },
+          { actors: rushScene(R_PAT, [], [], [rushAt('rush', -8, RUSH_Y, { flip: true }), robot('stand')]), texts: [txt('?', 28, 0, GOLD)], hold: 3 },
+          { actors: rushScene(R_ENTER, [], [], [rushAt('rush', -8, RUSH_Y, { flip: true }), robot('stand')]), texts: [says('...')], hold: 2 },
+          { actors: rushScene(null, [], [], [rushAt('rush', -8, RUSH_Y, { flip: true }), robot('stand')]), texts: [says('HE IS BEHIND ME.')], hold: 3 },
+        ]),
+      )),
+      take(
+        ...captioned('Rush chews the hand. Gently. For now.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [rushAt('rush', RX, 3)]), texts: [woof('CHOMP.')], hold: 2 },
+          { actors: rushScene(R_PAT, [rushAt('rush', RX, 3)]), texts: [woof('...')], hold: 2 },
+          { actors: rushScene(R_HOVER, [RUSH_DOG]), hold: 1 },
+          { actors: rushScene(R_ENTER, [RUSH_DOG]), texts: [woof('GENTLY.')], hold: 2 },
+          { actors: rushScene(null, [RUSH_DOG]), texts: [woof('FOR NOW.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Rush whines. Rush would like a bolt first.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [RUSH_DOG]), texts: [woof('WHINE.')], hold: 3 },
+          { actors: rushScene(R_HOVER, [RUSH_DOG]), texts: [woof('A BOLT?')], hold: 3 },
+          { actors: rushScene(null, [RUSH_DOG]), texts: [woof('A BOLT?')], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      needing(['robot'], take(
+        ...captioned('The robot steps in. Buster out. His dog.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [RUSH_DOG], [], [{ ...robot('walk', 2), tiers: SMALL }, { ...robot('walk', 0), tiers: BIG }]), texts: [woof('WHINE.')], hold: 1 },
+          { actors: rushScene(R_HOVER, [RUSH_DOG], [], [{ ...robot('attack', 4), tiers: SMALL }, { ...robot('attack', 0), tiers: BIG }]), texts: [says('HEY.')], hold: 3 },
+          { actors: rushScene(R_ENTER, [RUSH_DOG], [], [{ ...robot('attack', 4), tiers: SMALL }, { ...robot('attack', 0), tiers: BIG }]), texts: [says('MY DOG.')], hold: 3 },
+          { actors: rushScene(null, [RUSH_WAG], [], [{ ...robot('attack', 4), tiers: SMALL }, { ...robot('attack', 0), tiers: BIG }]), texts: [says('MY DOG.')], hold: 1 },
+          { actors: rushScene(null, [RUSH_DOG], [], [{ ...robot('walk', 2), tiers: SMALL }, { ...robot('walk', 0), tiers: BIG }]), hold: 1 },
+          { actors: rushScene(null, [RUSH_DOG]), hold: 1 },
+        ]),
+      )),
+      take(
+        ...captioned('Rush calls Beat. Beat pecks the hand.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [RUSH_DOG], [rushAt('beat1', 34, -22, { offstage: true })]), texts: [woof('WOOF!')], hold: 1 },
+          { actors: rushScene(R_HOVER, [RUSH_DOG], [rushAt('beat2', 30, -16)]), hold: 1 },
+          { actors: rushScene(R_HOVER, [RUSH_DOG], [rushAt('beat1', 29, -13), rushAt('hitSpark', 26, -14)]), texts: [woof('PECK', 20, -8)], hold: 1 },
+          { actors: rushScene(R_ENTER, [RUSH_DOG], [rushAt('beat2', 30, -16), rushAt('hitSpark', 27, -16)]), texts: [woof('PECK PECK', 20, -8)], hold: 2 },
+          { actors: rushScene(null, [RUSH_WAG], [rushAt('beat1', 33, -24, { offstage: true })]), texts: [woof('PECK PECK', 20, -8)], hold: 1 },
+          { actors: rushScene(null, [RUSH_WAG]), texts: [woof('GOOD BIRD')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Rush Jet. Rush hovers out of reach.', [
+          ...rStart(),
+          { actors: rushScene(R_HOVER, [RUSH_DOG]), texts: [woof('NOPE.')], hold: 1 },
+          { actors: rushScene(R_HOVER, [rushAt('rush', RX, -18), jet(RX, -18)]), hold: 1 },
+          { actors: rushScene(R_PAT, [rushAt('rush', RX, -18), jet(RX, -18)]), texts: [txt('?', 28, 0, GOLD)], hold: 2 },
+          { actors: rushScene(R_HOVER, [rushAt('rushWag', RX, -18), jet(RX, -18)]), texts: [txt('?', 28, 0, GOLD), woof('WOOF.', 24, -20)], hold: 2 },
+          { actors: rushScene(R_ENTER, [rushAt('rush', RX, -18), jet(RX, -18)]), texts: [woof('WOOF.', 24, -20)], hold: 2 },
+          { actors: rushScene(null, [rushAt('rushWag', RX, 1)]), hold: 1 },
+          { actors: rushScene(null, [RUSH_DOG]), hold: 1 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('Rush teleported out. Rush has had enough.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [RUSH_DOG]), texts: [woof('GRRR.', 29, 0, RED)], hold: 2 },
+          { actors: rushScene(R_ENTER, [RUSH_DOG]), texts: [woof('ENOUGH.', 29, 0, RED)], hold: 2 },
+          { actors: rushScene(null, [RUSH_DOG]), texts: [woof('ENOUGH.', 29, 0, RED)], hold: 1 },
+          ...RUSH_BEAMS_OUT,
+        ]),
+      ),
+      take(
+        ...captioned('Rush Jet. Rush flew off without you.', [
+          ...rStart(),
+          { actors: rushScene(R_PAT, [RUSH_DOG]), texts: [woof('...')], hold: 2 },
+          { actors: rushScene(R_HOVER, [rushAt('rush', RX, 1), jet(RX, 1)]), texts: [woof('BYE.')], hold: 2 },
+          { actors: rushScene(R_ENTER, [rushAt('rush', RX, 1), jet(RX, 1)]), hold: 1 },
+          ...RUSH_JETS_OUT,
+        ]),
+      ),
+    ],
+  },
+  // Rush's rest: the robot alone on the stage, looking for the dog.
+  rest: loop(
+    { actors: [robot('stand')], hold: 8 },
+    { actors: [robot('stand')], texts: [says('RUSH?')], hold: 6 },
+    { actors: [robot('stand'), { ...whistle(17, -6), gone: 'robot' }], hold: 6 },
+    { actors: [robot('stand')], texts: [txt('...', 28, 0)], hold: 8 },
+  ),
+}
+
+// 3. Knock on the Met. It sits where the buster aims; the finger comes down on
+// the hard hat. The finger is scenery here too.
+const MX = TARGET
+/** Where the finger comes down: its tip (the sprite's columns 6..7) over the hat's middle. */
+const M_HAND = MX - 3
+const M_ENTER = -24
+const M_HOVER = -6
+const M_KNOCK = 0
+const MET_H: Record<string, number> = { met: 5, metPeek: 7, metStep: 7, metGlare: 7, boltDrop: 7, disk: 7, hitSpark: 7, pellet: 3 }
+/** A Met (hidden, peeking, stepping, glaring) on the floor at `x`, or `up` pixels over it. */
+const metAt = (sprite = 'met', x = MX, up = 0, opts: Partial<Actor> = {}): Actor => at(sprite, x, 16 - (MET_H[sprite] ?? 5) - up, { fixed: true, gone: 'met', ...opts })
+const MET = metAt()
+const PEEK = metAt('metPeek')
+const STEP = metAt('metStep')
+/** The Met's line, left of it and over the floor; on a knock frame the finger is in its row, so keep those short. */
+const metSays = (text: string, y = 6, x = 20, color = '#fcfcfc'): SceneText => ({ ...txt(text, x, y, color), gone: 'met' })
+const KNOCKED = metAt('sparkle', MX + 2, 3)
+const metScene = (y: number | null, mets: Actor[] = [MET], more: Actor[] = [], who: Actor[] = [robot('stand')]): Actor[] => [
+  ...who,
+  ...mets,
+  ...(y === null ? [] : [glove('finger', M_HAND, y, M_ENTER, { fixed: true })]),
+  ...more,
+]
+const mStart = (mets: Actor[] = [MET]): Frame[] => [
+  { actors: metScene(M_ENTER, mets), hold: 1 },
+  { actors: metScene(M_HOVER, mets), hold: 1 },
+  { actors: metScene(M_KNOCK, mets, [KNOCKED]), hold: 1 },
+]
+/** The Met walks off to the right on its little feet. */
+const MET_WALKS_OFF: Frame[] = [
+  { actors: metScene(null, [metAt('metStep', 32, 0, { offstage: true })]), hold: 1 },
+  { actors: metScene(null, [metAt('metPeek', 36, 0, { offstage: true })]), hold: 1 },
+  { actors: metScene(null, [metAt('metStep', 41, 0, { offstage: true })]), hold: 1 },
+  { actors: metScene(null, []), texts: [txt('...', 20, 6)], hold: 3 },
+]
+/** The Met walks behind the robot to the ladder and climbs off the top. */
+const MET_TAKES_LADDER: Frame[] = [
+  { actors: [STEP, robot('stand')], hold: 1 },
+  { actors: [metAt('metPeek', 18), robot('stand')], hold: 1 },
+  { actors: [metAt('metStep', 6), robot('stand')], hold: 1 },
+  { actors: [metAt('metPeek', -10), robot('stand')], hold: 1 },
+  { actors: [metAt('metStep', -10, 8), robot('stand')], hold: 1 },
+  { actors: [metAt('metPeek', -10, 18), robot('stand')], hold: 1 },
+  { actors: [metAt('metStep', -10, 30, { offstage: true }), robot('stand')], hold: 1 },
+  { actors: [metAt('metPeek', -10, 44, { offstage: true }), robot('stand')], hold: 1 },
+  { actors: [robot('stand')], texts: [txt('...', 20, 6)], hold: 3 },
+]
+const knockMet: ThemeAction = {
+  id: 'met',
+  label: 'KNOCK ON MET',
+  restLabel: '(MET GONE)',
+  gone: ['met'],
+  needs: ['met'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Knock knock. Nobody is home.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER), texts: [metSays('KNOCK.')], hold: 1 },
+          { actors: metScene(M_KNOCK, [MET], [KNOCKED]), texts: [metSays('KNOCK.')], hold: 1 },
+          { actors: metScene(M_HOVER), texts: [metSays('...')], hold: 3 },
+          { actors: metScene(null), texts: [metSays('...')], hold: 1 },
+          { actors: metScene(null, [PEEK]), texts: [metSays('?', 6, 20, GOLD)], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The Met peeks out. Then thinks better of it.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('HI.')], hold: 2 },
+          { actors: metScene(M_KNOCK, [PEEK], [KNOCKED]), texts: [metSays('!', 6, 20, GOLD)], hold: 1 },
+          { actors: metScene(M_HOVER, [MET]), hold: 2 },
+          { actors: metScene(null, [MET]), texts: [metSays('NO.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The Met waves back. With its feet.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('HI.')], hold: 1 },
+          { actors: metScene(M_HOVER, [STEP]), texts: [metSays('HI.')], hold: 1 },
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('HI HI.')], hold: 1 },
+          { actors: metScene(null, [STEP]), texts: [metSays('HI HI.')], hold: 1 },
+          { actors: metScene(null, [PEEK]), texts: [metSays('HI HI HI.')], hold: 3 },
+          { actors: metScene(null, [MET]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('Knocked on the Met. Sounds hollow.', [
+          { actors: metScene(M_ENTER), hold: 1 },
+          { actors: metScene(M_HOVER), hold: 1 },
+          { actors: metScene(M_KNOCK, [MET], [metAt('sparkle', MX + 1, 3)]), hold: 1 },
+          { actors: metScene(M_HOVER), texts: [txt('*tonk*', 20, 6)], hold: 2 },
+          { actors: metScene(M_KNOCK, [MET], [metAt('sparkle', MX + 3, 3)]), hold: 1 },
+          { actors: metScene(M_HOVER), texts: [txt('*tonk*', 20, 6)], hold: 2 },
+          { actors: metScene(null, [PEEK]), texts: [metSays('HEY.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The Met drops a bolt. A tip for the knock.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), hold: 1 },
+          { actors: metScene(M_HOVER, [PEEK, metAt('boltDrop', 22, 0)]), texts: [metSays('TIP.', 6, 20)], hold: 2 },
+          { actors: metScene(M_ENTER, [MET, metAt('boltDrop', 22, 0), metAt('sparkle', 20, 5)]), hold: 2 },
+          { actors: metScene(null, [MET, metAt('boltDrop', 22, 0)]), texts: [says('THANKS?')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The Met is asleep. The Met is still asleep.', [
+          { actors: metScene(M_ENTER), texts: [metSays('z', 4, 27, CYAN)], hold: 1 },
+          { actors: metScene(M_HOVER), texts: [metSays('z', 4, 27, CYAN)], hold: 1 },
+          { actors: metScene(M_KNOCK, [MET], [KNOCKED]), hold: 1 },
+          { actors: metScene(M_HOVER), texts: [metSays('z', 4, 27, CYAN)], hold: 2 },
+          { actors: metScene(M_KNOCK, [MET], [KNOCKED]), hold: 1 },
+          { actors: metScene(M_ENTER), texts: [metSays('z', 4, 27, CYAN)], hold: 2 },
+          { actors: metScene(null), texts: [metSays('z', 4, 27, CYAN), metSays('Z', 2, 28, CYAN)], hold: 3 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The Met fires. Three ways. Rude.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('!', 6, 20, RED)], hold: 1 },
+          { actors: metScene(M_HOVER, [PEEK], [metAt('pellet', 25, 10), metAt('pellet', 29, 11), metAt('pellet', 33, 10)]), hold: 1 },
+          { actors: metScene(M_ENTER, [PEEK], [metAt('pellet', 22, 17), metAt('pellet', 29, 21), metAt('pellet', 35, 17)]), hold: 1 },
+          { actors: metScene(null, [PEEK], [metAt('pellet', 19, 27), metAt('pellet', 29, 34, { offstage: true }), metAt('pellet', 35, 27)]), hold: 1 },
+          { actors: metScene(null, [MET], [], [robot('stand'), ...ROBOT_SWEAT]), texts: [says('RUDE.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The Met glares. From under the helmet.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [metAt('metGlare')]), texts: [metSays('...')], hold: 3 },
+          { actors: metScene(M_ENTER, [metAt('metGlare')]), texts: [metSays('GRR.', 6, 20, RED)], hold: 2 },
+          { actors: metScene(null, [metAt('metGlare')]), texts: [metSays('GRR.', 6, 20, RED)], hold: 2 },
+          { actors: metScene(null, [MET]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The Met writes to the Doctor. About you.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK, metAt('disk', 21, 0)]), texts: [metSays('DEAR DOCTOR,')], hold: 3 },
+          { actors: metScene(M_ENTER, [PEEK, metAt('disk', 21, 0)]), texts: [metSays('...')], hold: 1 },
+          { actors: metScene(null, [PEEK, metAt('disk', 21, 0)]), texts: [metSays('SINCERELY, MET.')], hold: 3 },
+          { actors: metScene(null, [MET, metAt('disk', 21, 0)]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The Met calls its union rep. Also a Met.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('REP!')], hold: 2 },
+          { actors: metScene(M_HOVER, [MET, metAt('metStep', 16)]), hold: 1 },
+          { actors: metScene(M_HOVER, [MET, metAt('met', 20)]), texts: [metSays('...', 6, 20), metSays('...', 6, 28)], hold: 3 },
+          { actors: metScene(null, [MET, metAt('met', 20)]), texts: [metSays('...', 6, 20), metSays('...', 6, 28)], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Please stop knocking. Signed, the Met.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('STOP KNOCKING.')], hold: 3 },
+          { actors: metScene(M_KNOCK, [PEEK], [KNOCKED]), texts: [metSays('!', 6, 20, GOLD)], hold: 1 },
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('I SAID STOP.')], hold: 3 },
+          { actors: metScene(null, [MET]), hold: 1 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The Met calls the boss. The boss is busy.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('BOSS!', 6, 20, RED)], hold: 2 },
+          { actors: metScene(M_ENTER, [MET], gate('doorOpen')), hold: 1 },
+          { actors: metScene(null, [MET], gate('doorHalf')), hold: 1 },
+          { actors: metScene(null, [MET], gate('doorShut')), hold: 1 },
+          { actors: metScene(null, [MET], [...gate('doorShut'), bossBarAt(1)]), hold: 2 },
+          { actors: metScene(null, [MET], [...gate('doorShut'), bossBarAt(1)]), texts: [says('...')], hold: 2 },
+          { actors: metScene(null, [MET], gate('doorHalf')), hold: 1 },
+          { actors: metScene(null, [PEEK], gate('doorOpen')), texts: [metSays('BUSY.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The Met jumps at the hand. Little feet.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('HYAH!', 6, 20, RED)], hold: 1 },
+          { actors: metScene(M_HOVER, [metAt('metPeek', MX, 6)], [metAt('hitSpark', 26, 1)]), texts: [metSays('HYAH!', 6, 20, RED)], hold: 1 },
+          { actors: metScene(M_ENTER, [metAt('metPeek', MX, 3)]), hold: 1 },
+          { actors: metScene(null, [STEP]), hold: 1 },
+          { actors: metScene(null, [PEEK]), texts: [metSays('...')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The Mets stack up. The top one is in charge.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('MET!', 6, 20, RED)], hold: 1 },
+          { actors: metScene(M_HOVER, [MET, metAt('met', MX, 5)]), hold: 1 },
+          { actors: metScene(M_ENTER, [MET, metAt('met', MX, 5), metAt('met', MX, 10)]), hold: 1 },
+          { actors: metScene(null, [MET, metAt('met', MX, 5), metAt('met', MX, 10)]), texts: [metSays('...', 6), metSays('...', 1), metSays('...', -4)], hold: 3 },
+          { actors: metScene(null, [MET, metAt('met', MX, 5), metAt('met', MX, 10)], [], [robot('stand'), ...ROBOT_SWEAT]), texts: [metSays('...', 6), metSays('...', 1), metSays('...', -4)], hold: 2 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The Met walked off. To another stage.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('BYE.')], hold: 2 },
+          { actors: metScene(M_ENTER, [STEP]), texts: [metSays('BYE.')], hold: 1 },
+          ...MET_WALKS_OFF,
+        ]),
+      ),
+      take(
+        ...captioned('The Met took the ladder. Somewhere to be.', [
+          ...mStart(),
+          { actors: metScene(M_HOVER, [PEEK]), texts: [metSays('THAT IS IT.')], hold: 2 },
+          { actors: metScene(M_ENTER, [PEEK]), hold: 1 },
+          ...MET_TAKES_LADDER,
+        ]),
+      ),
+    ],
+  },
+  // The Met's rest: the robot alone, the spot by the buster empty.
+  rest: loop(
+    { actors: [robot('stand')], hold: 8 },
+    { actors: [robot('stand')], texts: [txt('...', 20, 6)], hold: 6 },
+    { actors: [robot('walk')], hold: 2 },
+    { actors: [robot('stand')], texts: [says('MET?')], hold: 6 },
+  ),
+}
+
+const actions: ThemeAction[] = [pokeRobot, petRush, knockMet]
+
 const poses = (p: string) => ({ stand: `${p}Stand`, walk: `${p}Walk`, attack: `${p}Attack`, itemGet: `${p}ItemGet`, sleep: `${p}Sleep` })
 // The big forms' buster is four columns further out and two rows higher than the Blue Bomber's.
 const BIG_FORM = { dx: -4, dy: -7, lift: 7, hand: { x: 4, y: -2 } }
@@ -806,6 +1505,7 @@ export const megaman: Theme = {
   cold,
   overkill,
   events,
+  actions,
   scene: {
     height: 40,
     anchor: { x: 10, y: 20 },

@@ -17,7 +17,7 @@
 
 import { at, hero, loop, once, mixHex, weapon } from './kit'
 import { rotate } from './pixel'
-import type { Actor, HeroTier, SceneText, Sprite, Theme } from './types'
+import type { Actor, Animation, Frame, HeroTier, SceneText, Sprite, Theme, ThemeAction } from './types'
 
 // ---------------------------------------------------------------------------
 // Palette
@@ -729,6 +729,12 @@ const sprites: Theme['sprites'] = {
   sweat: spr(['.O.', '.O.', 'OOO', 'OOs', '.s.'], { O: 'sweat', s: 'sweatS' }),
   sparkA: spr(['.g.', 'gWg', '.g.'], { g: 'glint', W: 'W' }),
   sparkB: spr(['g.g', '.G.', 'g.g'], { g: 'glint2', G: 'glint' }),
+  // Actions: the viewer's arm (a red sleeve, a blocky hand), the sign's post, the creeper's crater and its smoke.
+  arm: spr(['rrrrrrrr', 'RRRRRRRR', 'SSSSSSSS', 'SsSsSsSS', 'SSSSSSSS', 'SSSSSSSS', '.SSSSSS.', '..ssss..'], { r: 'capeR', R: 'capeRS', S: 'S', s: 's' }),
+  signPost: spr(['.w.', '.w.', '.w.', '.w.'], { w: 'w' }),
+  crater: spr(['..kkkkkkkk..', '.kKKKKKKKKk.', 'kKKkkkkkkKKk', '.kKKKKKKKKk.'], { k: 'bed2', K: 'bed3' }),
+  wispA: spr(['.s.', 's..', '.S.'], { s: 'smoke3', S: 'smoke2' }),
+  wispB: spr(['s..', '.s.', '.S.'], { s: 'smoke3', S: 'smoke2' }),
   toast: toastPanel,
   borderWall,
 }
@@ -1060,6 +1066,660 @@ const events: Theme['events'] = {
   ),
 }
 
+// ---------------------------------------------------------------------------
+// Actions: the buttons under the scene. You are a blocky arm in a red sleeve
+// from the top of the scene, the first-person arm of this kind of game, holding
+// the current pickaxe head-down. Each press plays one of the tier's takes,
+// picked at random; the target's patience wears down with repeated presses
+// (see `pressAction`).
+// ---------------------------------------------------------------------------
+
+const YELLOW = '#ffff55' // chat and advancement yellow
+const RED = '#ff5555'
+const CREEP = '#8fd87a' // what a creeper says
+const say = (text: string, x: number, y: number, color = Z): SceneText => ({ text, x, y, color })
+/** A reaction: one-shot, every frame held twice as long as written (a line stays about a second at 6 fps). */
+const take = (...frames: Frame[]): Animation => once(...frames.map(f => ({ ...f, hold: 2 * Math.max(1, f.hold ?? 1) })))
+/** The same caption on every frame from `from` on. */
+const captioned = (caption: string, frames: Frame[], from = 2): Frame[] => frames.map((f, k) => (k >= from ? { ...f, caption } : f))
+/** A take that is only picked while these are present. */
+const needing = (needs: string[], anim: Animation): Animation => ({ ...anim, needs })
+// Who is who, for the rests: the miner (and what is his) is `miner`, the wolf `wolf`, the creeper `creeper`.
+const minerOf = (actors: Actor[]): Actor[] => actors.map(a => ({ ...a, gone: 'miner' }))
+const miner = (pose: string, x = 0, y = 0, swap?: Record<string, string>): Actor => ({ ...hero(pose, x, y, swap), gone: 'miner' })
+/** The arm (8 by 8) with the pickaxe hanging head-down from the fist: its head ends 14 pixels under the arm's top. Scenery: it does not move with the champion. */
+const you = (x: number, y: number, opts: Partial<Actor> = {}): Actor[] => [weapon(x + 2, y + 5, { flipY: true, fixed: true, ...opts }), at('arm', x, y, { fixed: true, ...opts })]
+/** The empty fist, scenery. */
+const fist = (x: number, y: number, opts: Partial<Actor> = {}): Actor => at('arm', x, y, { fixed: true, ...opts })
+/**
+ * The arm over the miner's head: it rises with the champion as a prop over the head does. The pickaxe is
+ * placed per tier (a weapon over the head would otherwise slide to the champion's `aloft` spot).
+ */
+const youOverhead = (x: number, y: number, opts: Partial<Actor> = {}): Actor[] => [
+  { ...weapon(x + 2, y + 5, { flipY: true, fixed: true, ...opts }), tiers: SMALL },
+  { ...weapon(x + 2, y + 5 - LIFT, { flipY: true, fixed: true, ...opts }), tiers: GRAND },
+  at('arm', x, y, opts),
+]
+/** The spark where the pickaxe meets the helmet; it rises with the champion. */
+const CLINK: Actor = at('sparkA', 7, -3)
+
+// 1. Poke the miner. The arm comes down on the helmet from the top of the
+// scene, by the crafting table: in from above, a hover, the poke, then the
+// reaction. His lines sit right of his head, under the arm's rows.
+const AX = 2
+const A_ENTER = -24
+const A_HOVER = -18
+const A_POKE = -14
+/** The miner and the arm at `y` (null: gone), by the table and the torch (`flicker`: its other frame). */
+const minerScene = (y: number | null, crew: Actor[], more: Actor[] = [], flicker = false): Actor[] => [
+  table(),
+  torch(flicker ? 1 : 0),
+  ...minerOf(crew),
+  ...(y === null ? [] : youOverhead(AX, y, y < A_POKE ? { offstage: true } : {})),
+  ...more,
+]
+const aStart = (crew: Actor[] = [hero('stand')]): Frame[] => [
+  { actors: minerScene(A_ENTER, crew), hold: 1 },
+  { actors: minerScene(A_HOVER, crew), hold: 1 },
+  { actors: minerScene(A_POKE, crew, [CLINK], true), hold: 1 },
+]
+/** The miner's line beside his head: right of the champion's shoulders, clear of the arm (at most 18 characters). */
+const aside = (text: string, y = -2, color = Z): SceneText => ({ ...say(text, 18, y, color), gone: 'miner' })
+const EMERALD: Actor = { ...at('emeraldIcon', 15, -5), gone: 'miner' }
+const BLOCK_HAT: Actor = { ...at('dirtBlock', 4, -2), gone: 'miner' }
+const POOF = (swap: Record<string, string>): Actor => at('boom2', -1, 1, { swap })
+const POKED_TOAST: SceneText[] = [
+  { text: 'Advancement Made!', x: 9, y: -16, color: YELLOW, gone: 'miner' },
+  { text: 'Got Poked', x: 9, y: -14, color: Z, gone: 'miner' },
+]
+/** The sign he puts up on the table: planks with ink on them, on a post. */
+const SIGN: SceneText = { text: ' NO POKING ', x: 23, y: 2, color: '#1e1e1e', bg: '#ad8650', gone: 'miner' }
+const SIGN_POST: Actor = { ...at('signPost', 27, 4, { fixed: true }), gone: 'miner' }
+const wolfAt = (x: number, flip = false): Actor => at('wolfSit', x, 8, { fixed: true, flip, gone: 'wolf' })
+const wolfSay = (text: string, x: number): SceneText => ({ ...say(text, x, 4), gone: 'wolf' })
+const probeMiner: ThemeAction = {
+  id: 'miner',
+  label: 'POKE MINER',
+  restLabel: '(MINER GONE)',
+  gone: ['miner'],
+  needs: ['miner'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked the miner. Helmets exist for a reason.', [
+          ...aStart(),
+          { actors: minerScene(A_POKE, [hero('stand')], [CLINK], true), texts: [say('clink', 13, -6)], hold: 2 },
+          { actors: minerScene(A_HOVER, [hero('stand')]), texts: [aside("HELMET'S ON.")], hold: 3 },
+          { actors: minerScene(null, [hero('stand')], [], true), texts: [aside('NICE TRY.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked the miner. He offered an emerald. One.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('itemGet'), EMERALD]), texts: [aside('1 EMERALD?', -4)], hold: 3 },
+          { actors: minerScene(A_HOVER, [hero('itemGet'), EMERALD], [], true), texts: [aside('NO? OK.', -4)], hold: 2 },
+          { actors: minerScene(null, [hero('stand')]), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked the miner. Half a heart. He noticed.', [
+          ...aStart(),
+          { actors: minerScene(A_POKE, [hero('stand', 0, 0, HURT)], [CLINK], true), hold: 1 },
+          { actors: minerScene(A_HOVER, [hero('stand', -1)]), texts: [aside('OW.')], hold: 2 },
+          { actors: minerScene(A_HOVER, [hero('stand', -1)], [], true), texts: [aside('HALF A HEART.')], hold: 3 },
+          { actors: minerScene(null, [hero('stand')]), texts: [aside('RUDE.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked the miner. He looked the wrong way.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [lookBack]), texts: [aside('?')], hold: 2 },
+          { actors: minerScene(A_HOVER, [hero('stand')], [], true), hold: 1 },
+          { actors: minerScene(A_POKE, [hero('stand')], [CLINK]), hold: 1 },
+          { actors: minerScene(A_HOVER, [lookBack], [], true), texts: [aside('WHO IS THERE?')], hold: 3 },
+          { actors: minerScene(null, [hero('stand')]), texts: [aside('...')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked the miner. He is AFK. Try later.', [
+          ...aStart(),
+          { actors: minerScene(A_POKE, [hero('sleep')], [CLINK], true), texts: [aside('z', -4)], hold: 2 },
+          { actors: minerScene(A_HOVER, [hero('sleep')]), texts: [aside('Z', -6)], hold: 2 },
+          { actors: minerScene(A_POKE, [hero('sleep')], [CLINK], true), texts: [aside('z', -4)], hold: 2 },
+          { actors: minerScene(null, [hero('sleep')]), texts: [aside('AFK', -4, YELLOW)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('Advancement made: Got Poked. Worth 0 XP.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('stand')]), texts: [aside('!')], hold: 1 },
+          { actors: minerScene(null, [hero('itemGet'), toast()]), texts: POKED_TOAST, hold: 4 },
+          { actors: minerScene(null, [hero('stand'), toast()], [], true), texts: POKED_TOAST, hold: 3 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The miner put his head in a block. Safe now.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('stand'), BLOCK_HAT]), hold: 2 },
+          { actors: minerScene(-16, [hero('stand'), BLOCK_HAT], [], true), texts: [say('thud', 13, -6)], hold: 2 },
+          { actors: minerScene(A_HOVER, [hero('stand'), BLOCK_HAT]), texts: [aside('...')], hold: 2 },
+          { actors: minerScene(null, [hero('stand'), BLOCK_HAT], [], true), texts: [aside("CAN'T SEE YOU.")], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The miner swings back. Mind your fingers.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('attack'), weapon(14, -8)]), hold: 1 },
+          { actors: minerScene(A_ENTER, [hero('attack'), weapon(14, -12)], [at('sparkB', 10, -14)]), texts: [aside('MY TURN.')], hold: 2 },
+          { actors: minerScene(null, [hero('attack'), weapon(14, -12)], [], true), texts: [aside('HA.')], hold: 2 },
+          { actors: minerScene(null, [hero('stand')]), hold: 1 },
+        ]),
+      ),
+      take(
+        ...captioned('The miner would like to mine in peace.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('stand'), ...sweat]), texts: [aside('STOP THAT.')], hold: 3 },
+          { actors: minerScene(A_HOVER, [hero('stand'), ...sweat], [], true), texts: [aside("I'M MINING HERE.")], hold: 3 },
+          { actors: minerScene(null, [hero('stand'), ...sweat]), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The miner typed /kick. He lacks permission.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('stand')]), texts: [aside('/KICK YOU')], hold: 3 },
+          { actors: minerScene(A_HOVER, [hero('stand')], [], true), texts: [aside('/KICK YOU', -4), aside('NO PERMISSION.', -2, RED)], hold: 3 },
+          { actors: minerScene(null, [hero('stand'), ...sweat]), texts: [aside('NO PERMISSION.', -2, RED)], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The miner is eating. Hunger bar first.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('stand'), at('food2', 12, 3)]), texts: [aside('nom nom', 0)], hold: 2 },
+          { actors: minerScene(A_POKE, [hero('stand'), at('food2', 12, 3)], [CLINK], true), texts: [aside('nom nom', 0)], hold: 1 },
+          { actors: minerScene(A_HOVER, [hero('stand'), at('food1', 12, 3)]), texts: [aside("I'M EATING.")], hold: 3 },
+          { actors: minerScene(null, [hero('stand'), at('food0', 12, 3)], [], true), texts: [aside('nom.', 0)], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      needing(['wolf'], take(
+        ...captioned('The miner whistled. Two wolves have opinions.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('stand')], [wolfAt(-10, true), wolfAt(27)], true), texts: [aside('HERE, BOYS.')], hold: 2 },
+          { actors: minerScene(A_POKE, [hero('stand')], [CLINK, wolfAt(-10, true), wolfAt(27)]), texts: [wolfSay('GRR', -10), wolfSay('GRR', 27)], hold: 1 },
+          { actors: minerScene(A_ENTER, [hero('stand')], [wolfAt(-10, true), wolfAt(27)], true), texts: [wolfSay('GRRR', -10), wolfSay('GRRR', 27)], hold: 3 },
+          { actors: minerScene(null, [hero('stand')], [wolfAt(-10, true), wolfAt(27)]), texts: [aside('GOOD BOYS.')], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('The miner took your pickaxe. Finders keepers.', [
+          ...aStart(),
+          { actors: minerScene(A_POKE, [hero('itemGet')], [], true), hold: 1 },
+          // The pickaxe leaves the fist for his hands; the fist stays, empty.
+          { actors: [table(), torch(0), ...minerOf([hero('itemGet'), weapon(4, -9, { flipY: true })]), at('arm', AX, A_POKE)], hold: 1 },
+          { actors: [table(), torch(1), ...minerOf([hero('itemGet'), weapon(4, -9, { flipY: true })]), at('arm', AX, A_HOVER, { offstage: true })], texts: [aside('MINE NOW.', -4)], hold: 3 },
+          { actors: [table(), torch(0), ...minerOf([hero('itemGet'), weapon(4, -9, { flipY: true })]), at('arm', AX, A_ENTER, { offstage: true })], texts: [aside('MINE NOW.', -4)], hold: 1 },
+          { actors: [table(), torch(1), ...minerOf([hero('itemGet'), weapon(4, -9, { flipY: true })])], texts: [aside('FINDERS KEEPERS.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The miner put up a sign. It says NO POKING.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('attack')], [], true), hold: 1 },
+          { actors: minerScene(A_HOVER, [hero('stand')], [SIGN_POST]), texts: [SIGN], hold: 3 },
+          { actors: minerScene(A_POKE, [hero('stand')], [SIGN_POST, CLINK], true), texts: [SIGN, aside('READ THE SIGN.')], hold: 3 },
+          { actors: minerScene(null, [hero('stand')], [SIGN_POST]), texts: [SIGN], hold: 2 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The miner left the game.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('stand')]), texts: [aside("THAT'S IT.")], hold: 2 },
+          { actors: minerScene(null, [hero('stand')], [], true), texts: [aside('BYE.')], hold: 2 },
+          { actors: [table(), torch(0), POOF({ smoke2: 'glint', smoke3: 'glint2' })], hold: 1 },
+          { actors: [table(), torch(1)], texts: [say('Miner left the game.', 0, -2, YELLOW)], hold: 3 },
+          { actors: [table(), torch(0)], texts: [say('Miner left the game.', 0, -2, YELLOW)], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The miner typed /kill. Respawning elsewhere.', [
+          ...aStart(),
+          { actors: minerScene(A_HOVER, [hero('stand'), ...sweat]), texts: [aside('/KILL @S')], hold: 3 },
+          { actors: minerScene(null, [hero('stand', 0, 0, HURT)], [], true), hold: 1 },
+          { actors: [table(), torch(0), miner('lie', 0, 0, HURT)], hold: 1 },
+          { actors: [table(), torch(1), POOF({ smoke1: 'smoke2', smoke2: 'smoke3' })], texts: [say('YOU DIED!', 4, -8, RED)], hold: 2 },
+          { actors: [table(), torch(0)], texts: [say('YOU DIED!', 4, -8, RED), say('Respawning...', 2, -4)], hold: 3 },
+          { actors: [table(), torch(1)], hold: 1 },
+        ]),
+      ),
+    ],
+  },
+  // The miner's rest: the table and the torch, nobody at them; the wolf comes to wait.
+  rest: loop(
+    { actors: [table(), torch(0)], hold: 6 },
+    { actors: [table(), torch(1)], texts: [say('...', 4, -2)], hold: 6 },
+    { actors: [table(), torch(0), wolfAt(4, true)], hold: 6 },
+    { actors: [table(), torch(1), wolfAt(4, true)], texts: [wolfSay('?', 7)], hold: 6 },
+    { actors: [table(), torch(0), wolfAt(4, true)], texts: [wolfSay('awoo.', 5)], hold: 6 },
+    { actors: [table(), torch(1)], hold: 6 },
+  ),
+}
+
+// 2. Pet the wolf. It sits right of the miner, facing him; the empty fist
+// comes down on its head. The hand is scenery here (the wolf is the same
+// height whoever the miner is).
+const WX = 22
+const HX = 20
+const W_ENTER = -22
+const W_HOVER = -8
+const W_POKE = 0
+const wolfSits = (opts: Partial<Actor> = {}): Actor => at('wolfSit', WX, 8, { fixed: true, gone: 'wolf', ...opts })
+/** The miner watching, the wolf (or `wolf` in its place), the fist at `y` (null: gone). */
+const wolfScene = (y: number | null, wolf: Actor[] = [wolfSits()], more: Actor[] = [], crew: Actor[] = [hero('stand')], hand: Partial<Actor> = {}): Actor[] => [
+  ...minerOf(crew),
+  ...wolf,
+  ...(y === null ? [] : [fist(HX, y, { ...hand, ...(y <= W_ENTER ? { offstage: true } : {}) })]),
+  ...more,
+]
+const wStart = (wolf: Actor[] = [wolfSits()]): Frame[] => [
+  { actors: wolfScene(W_ENTER, wolf), hold: 1 },
+  { actors: wolfScene(W_HOVER, wolf), hold: 1 },
+  { actors: wolfScene(W_POKE, wolf), hold: 1 },
+]
+/** The wolf's line, left of its muzzle (at most 8 characters); `woofR`: right of it, over the hand's rows. */
+const woof = (text: string, color = Z): SceneText => ({ ...say(text, 14, 10, color), gone: 'wolf' })
+const woofR = (text: string): SceneText => ({ ...say(text, 29, 8), gone: 'wolf' })
+const HEART = (k: number): Actor => at('love', 30 + k, 5 - 2 * k, { fixed: true, gone: 'wolf' })
+const BONE_GIFT: Actor = at('bone', WX - 5, 13, { fixed: true, gone: 'wolf' })
+const BONE_GROUND: Actor = { ...at('bone', WX + 1, 13, { fixed: true }), gone: 'miner' }
+const WOLF_HIDES: Actor = at('wolfSit', -8, 8, { fixed: true, gone: 'wolf' })
+const WOLF_TWO: Actor = at('wolfSit', 29, 8, { fixed: true, gone: 'wolf' })
+const BITTEN = { S: 'hurt', s: 'hurtD' }
+const drop = (x: number, y: number): Actor => at('sweat', x, y, { fixed: true })
+/** The wolf gets up, runs off to the right, and the miner is left looking at the spot. */
+const wolfLeaves = (): Frame[] => [
+  { actors: wolfScene(null, [at('wolf', WX, 8, { fixed: true, gone: 'wolf' })]), hold: 1 },
+  { actors: wolfScene(null, [at('wolfRun', 30, 8, { fixed: true, offstage: true, gone: 'wolf' })]), texts: [woofR('AWOO')], hold: 1 },
+  { actors: wolfScene(null, [at('wolfRun', 40, 8, { fixed: true, offstage: true, gone: 'wolf' })]), hold: 1 },
+  { actors: wolfScene(null, [], [], [hero('stand'), ...sweat]), texts: [aside('...')], hold: 3 },
+]
+const petWolf: ThemeAction = {
+  id: 'wolf',
+  label: 'PET WOLF',
+  restLabel: '(WOLF GONE)',
+  gone: ['wolf'],
+  needs: ['wolf'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Petted the wolf. Good boy. Best boy.', [
+          ...wStart(),
+          { actors: wolfScene(-1, undefined, [HEART(0)]), texts: [woof('wag wag')], hold: 2 },
+          { actors: wolfScene(W_POKE, undefined, [HEART(0), HEART(1)]), texts: [woof('wag wag')], hold: 2 },
+          { actors: wolfScene(null, undefined, [HEART(1)]), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The wolf licked your hand. It is wet now.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE), texts: [woof('SLURP.')], hold: 2 },
+          { actors: wolfScene(W_HOVER, undefined, [drop(HX + 3, 0)]), texts: [woof('SLURP.')], hold: 2 },
+          { actors: wolfScene(W_ENTER, undefined, [drop(HX + 3, -12)]), hold: 1 },
+          { actors: wolfScene(null, undefined, [], [hero('stand'), ...sweat]), texts: [aside('EW.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The wolf brought you a bone. It is yours now.', [
+          ...wStart(),
+          { actors: wolfScene(W_HOVER, [wolfSits(), BONE_GIFT]), texts: [woof('FOR YOU.')], hold: 3 },
+          { actors: wolfScene(null, [wolfSits(), BONE_GIFT]), texts: [woof('FOR YOU.')], hold: 1 },
+          { actors: wolfScene(null, [wolfSits(), BONE_GIFT], [], [hero('stand'), ...sweat]), texts: [aside('KEEP IT.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Petted the wolf. It howled. The chunk heard.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE), texts: [woof('AWOO!')], hold: 2 },
+          { actors: wolfScene(W_HOVER), texts: [woof('AWOOOO!')], hold: 3 },
+          { actors: wolfScene(null, undefined, [], [hero('stand'), ...sweat]), texts: [woof('awoo.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The wolf is asleep. You petted it anyway.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE), texts: [woofR('z')], hold: 2 },
+          { actors: wolfScene(-1), texts: [woofR('Z')], hold: 2 },
+          { actors: wolfScene(W_POKE), texts: [woofR('z')], hold: 2 },
+          { actors: wolfScene(null), texts: [woof('zzz')], hold: 2 },
+        ]),
+      ),
+      needing(['miner'], take(
+        ...captioned('The miner says the wolf likes you. Mostly.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE, undefined, [HEART(0)]), texts: [aside('HE LIKES YOU.')], hold: 3 },
+          { actors: wolfScene(W_POKE, undefined, [HEART(0)]), texts: [aside('MOSTLY.')], hold: 2 },
+          { actors: wolfScene(null), hold: 2 },
+        ]),
+      )),
+    ],
+    irritated: [
+      take(
+        ...captioned('The wolf growls. The miner backs up a step.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE), texts: [woof('GRRR.')], hold: 2 },
+          { actors: wolfScene(W_HOVER, undefined, [], [hero('stand', -2), ...sweat]), texts: [woof('GRRR.')], hold: 3 },
+          { actors: wolfScene(null, undefined, [], [hero('stand', -2), ...sweat]), texts: [aside('EASY, BOY.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The wolf snapped at your hand. Missed. Barely.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE), texts: [woof('SNAP!')], hold: 1 },
+          { actors: wolfScene(W_ENTER, undefined, [at('sparkB', WX - 2, 9, { fixed: true })]), texts: [woof('SNAP!')], hold: 2 },
+          { actors: wolfScene(null), texts: [woof('...')], hold: 2 },
+          { actors: wolfScene(null, undefined, [], [hero('stand'), ...sweat]), texts: [aside('CLOSE ONE.')], hold: 2 },
+        ]),
+      ),
+      needing(['miner'], take(
+        ...captioned('The wolf hid behind the miner. Shy, suddenly.', [
+          ...wStart(),
+          { actors: wolfScene(W_HOVER, [at('wolf', WX - 4, 8, { fixed: true, flip: true, gone: 'wolf' })]), hold: 1 },
+          { actors: [at('wolfRun', 6, 8, { fixed: true, flip: true, gone: 'wolf' }), miner('stand'), fist(HX, W_HOVER)], hold: 1 },
+          { actors: [WOLF_HIDES, miner('stand'), fist(HX, W_HOVER)], texts: [{ ...say('...', -6, 4), gone: 'wolf' }], hold: 2 },
+          { actors: [WOLF_HIDES, miner('stand'), fist(HX, W_POKE)], texts: [aside('HE IS SHY.')], hold: 3 },
+          { actors: [WOLF_HIDES, miner('stand')], hold: 1 },
+        ]),
+      )),
+      take(
+        ...captioned('The wolf barks. The whole chunk heard that.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE), texts: [woof('WOOF!')], hold: 1 },
+          { actors: wolfScene(W_HOVER, undefined, [], [hero('itemGet')]), texts: [woof('WOOF!'), woofR('WOOF!')], hold: 2 },
+          { actors: wolfScene(W_ENTER, undefined, [], [hero('itemGet')]), texts: [woofR('WOOF!')], hold: 2 },
+          { actors: wolfScene(null, undefined, [], [hero('stand'), ...sweat]), texts: [aside('INSIDE VOICE.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('The wolf shook itself dry. On you.', [
+          ...wStart(),
+          { actors: wolfScene(W_HOVER, [wolfSits({ flip: true })], [drop(WX - 3, 6), drop(WX + 8, 7)]), texts: [woof('shake')], hold: 1 },
+          { actors: wolfScene(W_HOVER, [wolfSits()], [drop(WX + 2, 4), drop(WX + 9, 10)]), texts: [woof('shake')], hold: 1 },
+          { actors: wolfScene(W_HOVER, [wolfSits({ flip: true })], [drop(WX - 3, 6), drop(WX + 8, 7)]), hold: 1 },
+          { actors: wolfScene(W_ENTER, [wolfSits()], [drop(HX + 3, -12)]), texts: [woof('...')], hold: 2 },
+          { actors: wolfScene(null, undefined, [], [hero('stand'), ...sweat]), texts: [aside('HE SWAM EARLIER.')], hold: 2 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned('The wolf bit the hand. Fair enough, honestly.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE, undefined, [], undefined, { swap: BITTEN }), texts: [woof('CHOMP.')], hold: 2 },
+          { actors: wolfScene(W_HOVER, undefined, [], [hero('stand'), ...sweat], { swap: BITTEN }), texts: [say('OW', HX + 9, -6)], hold: 2 },
+          { actors: wolfScene(W_ENTER, undefined, [], [hero('stand'), ...sweat], { swap: BITTEN }), texts: [woof('HMPH.')], hold: 2 },
+          { actors: wolfScene(null, undefined, [], [hero('stand'), ...sweat]), texts: [aside('FAIR ENOUGH.')], hold: 2 },
+        ]),
+      ),
+      needing(['miner'], take(
+        ...captioned('The miner steps in. That is his dog, thanks.', [
+          ...wStart(),
+          { actors: wolfScene(W_HOVER, undefined, [], [hero('walk', 1)]), texts: [woof('GRRR.')], hold: 1 },
+          { actors: wolfScene(W_HOVER, undefined, [], [hero('itemGet', 2)]), texts: [{ ...say('MY DOG.', 8, -8), gone: 'miner' }], hold: 3 },
+          { actors: wolfScene(W_ENTER, undefined, [], [hero('itemGet', 2)]), texts: [{ ...say('MY DOG.', 8, -8), gone: 'miner' }], hold: 2 },
+          { actors: wolfScene(null, undefined, [HEART(0)], [hero('stand', 2)]), texts: [woof('wag')], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('The wolf called a friend. Two sets of teeth.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE), texts: [woof('GRRR.')], hold: 1 },
+          { actors: wolfScene(W_HOVER), texts: [woof('AWOO!')], hold: 2 },
+          { actors: wolfScene(W_HOVER, [wolfSits(), at('wolfRun', 34, 8, { fixed: true, flip: true, offstage: true, gone: 'wolf' })]), hold: 1 },
+          { actors: wolfScene(W_HOVER, [wolfSits(), WOLF_TWO]), texts: [woof('GRRR.'), { ...say('GRRR.', 29, 6), gone: 'wolf' }], hold: 3 },
+          { actors: wolfScene(W_ENTER, [wolfSits(), WOLF_TWO]), texts: [woof('GRRR.'), { ...say('GRRR.', 29, 6), gone: 'wolf' }], hold: 1 },
+          { actors: wolfScene(null, [wolfSits(), WOLF_TWO], [], [hero('stand'), ...sweat]), texts: [aside('TWO NOW.')], hold: 2 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('The wolf ran off. It will be back. Probably.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE), texts: [woof('GRRR.')], hold: 2 },
+          { actors: wolfScene(W_ENTER), texts: [woof('NO.')], hold: 2 },
+          ...wolfLeaves(),
+        ]),
+      ),
+      take(
+        ...captioned('The wolf is wild again. It left for the woods.', [
+          ...wStart(),
+          { actors: wolfScene(W_POKE, [wolfSits({ swap: { collar: 'wolf' } })]), texts: [woof('...')], hold: 2 },
+          { actors: wolfScene(W_HOVER, [wolfSits({ swap: { collar: 'wolf' } })], [], [hero('stand'), ...sweat]), texts: [aside('HIS COLLAR!')], hold: 3 },
+          { actors: wolfScene(null, [at('wolf', WX, 8, { fixed: true, swap: { collar: 'wolf' }, gone: 'wolf' })], [], [hero('stand'), ...sweat]), hold: 1 },
+          { actors: wolfScene(null, [at('wolfRun', 30, 8, { fixed: true, offstage: true, swap: { collar: 'wolf' }, gone: 'wolf' })], [], [hero('stand'), ...sweat]), hold: 1 },
+          { actors: wolfScene(null, [at('wolfRun', 40, 8, { fixed: true, offstage: true, swap: { collar: 'wolf' }, gone: 'wolf' })], [], [hero('stand'), ...sweat]), hold: 1 },
+          { actors: wolfScene(null, [], [], [hero('stand'), ...sweat]), texts: [aside('BE FREE, I GUESS.')], hold: 3 },
+        ]),
+      ),
+    ],
+  },
+  // The wolf's rest: the miner calls; nobody comes. A bone is left out, just in case.
+  rest: loop(
+    { actors: [miner('stand')], hold: 6 },
+    { actors: [miner('stand')], texts: [aside('HERE, BOY?')], hold: 6 },
+    { actors: [miner('itemGet'), BONE_GROUND], texts: [aside('I HAVE A BONE.')], hold: 6 },
+    { actors: [miner('stand'), BONE_GROUND], texts: [aside('...')], hold: 6 },
+    { actors: [{ ...lookBack, gone: 'miner' }, BONE_GROUND], hold: 6 },
+  ),
+}
+
+// 3. Poke the creeper. It stands where the props go, as when it comes for a
+// failed tool; the arm comes down on its head with the pickaxe. Its hisses sit
+// over its head while the arm is up, beside it while the arm is down.
+const CX = 24
+const C_ENTER = -24
+const C_HOVER = -18
+const C_POKE = -13
+const FLASHED = { creep1: 'W', creep2: 'smoke2', creep3: 'W' }
+const creeperAt = (x: number, opts: Partial<Actor> = {}): Actor => at('creeper', x, 1, { fixed: true, gone: 'creeper', ...opts })
+const creeper = (opts: Partial<Actor> = {}): Actor => creeperAt(Q, opts)
+/** The miner watching, the creeper (or `creep` in its place), the arm at `y` (null: gone). */
+const creeperScene = (y: number | null, creep: Actor[] = [creeper()], more: Actor[] = [], crew: Actor[] = [hero('stand')]): Actor[] => [
+  ...minerOf(crew),
+  ...creep,
+  ...(y === null ? [] : you(CX, y, y <= C_ENTER ? { offstage: true } : {})),
+  ...more,
+]
+const cStart = (creep: Actor[] = [creeper()]): Frame[] => [
+  { actors: creeperScene(C_ENTER, creep), hold: 1 },
+  { actors: creeperScene(C_HOVER, creep), hold: 1 },
+  { actors: creeperScene(C_POKE, creep, [at('sparkA', Q + 1, -2, { fixed: true })]), hold: 1 },
+]
+/** The creeper's line beside it, under the arm (at most 8 characters); `hissUp`: over its head, the arm up or gone (at most 11). */
+const hiss = (text: string, color = CREEP): SceneText => ({ ...say(text, 17, 2, color), gone: 'creeper' })
+const hissUp = (text: string, color = CREEP): SceneText => ({ ...say(text, 25, -2, color), gone: 'creeper' })
+const fleeing = (x: number): Actor => ({ ...hero('walk', x), flip: true })
+const WALL_LOW: Actor = { ...at('dirtBlock', P, 8), gone: 'miner' }
+const WALL_HIGH: Actor = { ...at('dirtBlock', P, 0), gone: 'miner' }
+const CRATER: Actor = at('crater', Q - 2, 16, { fixed: true })
+const WISP_A: Actor = at('wispA', Q + 2, 11, { fixed: true })
+const WISP_B: Actor = at('wispB', Q + 3, 9, { fixed: true })
+const boom = (sprite: string, x: number, y: number, swap?: Record<string, string>): Actor => at(sprite, x, y, { fixed: true, swap, gone: 'creeper' })
+/** The fuse runs out: the blast at the creeper's spot knocks the miner back; a crater smokes where it stood. */
+const creeperBlows = (crew: Actor[] = [hero('stand')], x = 0): Frame[] => [
+  { actors: creeperScene(null, [creeper({ swap: FLASHED })], [], crew), texts: [hiss('SSSS')], hold: 1 },
+  { actors: creeperScene(null, [], [boom('boom1', Q - 4, 2)], [hero('stand', x - 1, 0, HURT)]), hold: 1 },
+  { actors: creeperScene(null, [], [boom('boom2', Q - 8, 0)], [hero('stand', x - 2, 0, { ...HURT, A: 'hurtL', C: 'hurtL' })]), hold: 1 },
+  { actors: creeperScene(null, [], [CRATER, boom('boom1', Q - 4, 4, { boomO: 'smoke3', smoke1: 'smoke2' })], [hero('stand', x - 2, 0, HURT)]), hold: 1 },
+  { actors: creeperScene(null, [], [CRATER, WISP_A], [hero('stand', x - 1), ...sweat]), hold: 1 },
+  { actors: creeperScene(null, [], [CRATER, WISP_B], [hero('stand', x), ...sweat]), texts: [aside('...')], hold: 3 },
+]
+const pokeCreeper: ThemeAction = {
+  id: 'creeper',
+  label: 'POKE CREEPER',
+  restLabel: '(KABOOM)',
+  gone: ['creeper'],
+  needs: ['creeper'],
+  reactions: {
+    calm: [
+      take(
+        ...captioned('Poked the creeper. It hissed. Politely.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE), texts: [hiss('sss')], hold: 2 },
+          { actors: creeperScene(C_HOVER), texts: [hissUp('sss.')], hold: 2 },
+          { actors: creeperScene(null), hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Creeper poked. No arms, so no poking back.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE), texts: [hiss('...')], hold: 2 },
+          { actors: creeperScene(C_HOVER), texts: [hissUp('NO ARMS.')], hold: 3 },
+          { actors: creeperScene(null), texts: [hissUp('UNFAIR.')], hold: 2 },
+        ]),
+      ),
+      take(
+        ...captioned('Poked the creeper. It thought about it. No.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE, [creeper({ swap: FLASHED })]), texts: [hiss('SSSS')], hold: 1 },
+          { actors: creeperScene(C_HOVER), texts: [hiss('...')], hold: 2 },
+          { actors: creeperScene(null), texts: [hissUp('NAH.')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The creeper took one step back. Just one.', [
+          ...cStart(),
+          { actors: creeperScene(C_HOVER, [creeperAt(Q + 2)]), texts: [hiss('sss')], hold: 2 },
+          { actors: creeperScene(C_POKE, [creeperAt(Q + 2)]), texts: [hiss('...')], hold: 2 },
+          { actors: creeperScene(null, [creeperAt(Q + 2)]), texts: [hissUp('sss.')], hold: 2 },
+        ]),
+      ),
+      needing(['miner'], take(
+        ...captioned('The miner would like you to not poke that.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE, undefined, [], [hero('stand'), ...sweat]), texts: [aside("DON'T.")], hold: 2 },
+          { actors: creeperScene(C_HOVER, undefined, [], [hero('stand'), ...sweat]), texts: [aside("DON'T POKE THAT.")], hold: 3 },
+          { actors: creeperScene(null, undefined, [], [hero('stand'), ...sweat]), texts: [aside('PLEASE.')], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('The creeper admires your pickaxe. Uh oh.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE), texts: [hiss('sss?')], hold: 2 },
+          { actors: creeperScene(C_HOVER), texts: [hissUp('NICE PICK.')], hold: 3 },
+          { actors: creeperScene(C_HOVER, undefined, [], [hero('stand'), ...sweat]), texts: [hissUp('NICE PICK.'), aside('OH NO.')], hold: 2 },
+          { actors: creeperScene(null, undefined, [], [hero('stand'), ...sweat]), texts: [hissUp('SHAME IF...')], hold: 3 },
+        ]),
+      ),
+    ],
+    irritated: [
+      take(
+        ...captioned('The creeper counted to two. Then stopped.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE, [creeper({ swap: FLASHED })]), texts: [hiss('SSSS')], hold: 1 },
+          { actors: creeperScene(C_HOVER), texts: [hiss('sss')], hold: 1 },
+          { actors: creeperScene(C_HOVER, [creeper({ swap: FLASHED })], [], [hero('stand'), ...sweat]), texts: [hiss('SSSS'), aside('!')], hold: 1 },
+          { actors: creeperScene(C_ENTER, undefined, [], [hero('stand'), ...sweat]), texts: [hiss('...')], hold: 2 },
+          { actors: creeperScene(null, undefined, [], [hero('stand'), ...sweat]), texts: [hissUp('TWO. HAPPY?')], hold: 3 },
+        ]),
+      ),
+      take(
+        ...captioned('The creeper moved closer to the miner. Great.', [
+          ...cStart(),
+          { actors: creeperScene(C_HOVER, [creeperAt(23)]), texts: [hiss('sss')], hold: 1 },
+          { actors: creeperScene(C_HOVER, [creeperAt(20)], [], [hero('stand'), ...sweat]), texts: [hiss('sss')], hold: 2 },
+          { actors: creeperScene(null, [creeperAt(20)], [], [hero('stand'), ...sweat]), texts: [aside('TOO CLOSE.')], hold: 2 },
+          { actors: creeperScene(null, [creeperAt(20)], [], [hero('stand', -2), ...sweat]), texts: [aside('TOO CLOSE.')], hold: 3 },
+        ]),
+      ),
+      needing(['miner'], take(
+        ...captioned('The miner drew his pickaxe. At everyone.', [
+          ...cStart(),
+          { actors: creeperScene(C_HOVER, undefined, [], [hero('attack'), windup()]), texts: [aside('BACK OFF.', -4)], hold: 3 },
+          { actors: creeperScene(C_HOVER, [creeperAt(Q + 2)], [], [hero('attack'), windup()]), texts: [hissUp('sss.')], hold: 2 },
+          { actors: creeperScene(null, [creeperAt(Q + 2)], [], [hero('attack'), windup()]), texts: [aside('AND YOU TOO.', -4)], hold: 2 },
+        ]),
+      )),
+      take(
+        ...captioned('The creeper hissed at your hand. You flinched.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE, [creeper({ swap: FLASHED })]), texts: [hiss('SSSS!')], hold: 1 },
+          { actors: creeperScene(C_ENTER), texts: [hiss('sss')], hold: 2 },
+          { actors: creeperScene(C_HOVER), texts: [hissUp('...')], hold: 1 },
+          { actors: creeperScene(C_ENTER, [creeper({ swap: FLASHED })]), texts: [hiss('SSSS!')], hold: 1 },
+          { actors: creeperScene(null), texts: [hissUp('HEH.')], hold: 3 },
+        ]),
+      ),
+    ],
+    fedUp: [
+      take(
+        ...captioned("False alarm. The miner's heart rate disagrees.", [
+          ...cStart(),
+          { actors: creeperScene(C_POKE, [creeper({ swap: FLASHED })], [], [hero('stand'), ...sweat]), texts: [hiss('SSSS'), aside('RUN!')], hold: 1 },
+          { actors: creeperScene(C_HOVER, undefined, [], [fleeing(-3)]), texts: [hiss('SSSS')], hold: 1 },
+          { actors: creeperScene(C_HOVER, [creeper({ swap: FLASHED })], [], [fleeing(-3)]), texts: [hiss('SSSS')], hold: 1 },
+          { actors: creeperScene(C_ENTER, undefined, [], [hero('stand', -3), ...sweat]), texts: [hissUp('...')], hold: 2 },
+          { actors: creeperScene(null, undefined, [], [hero('stand', -3), ...sweat]), texts: [hissUp('KIDDING.')], hold: 3 },
+        ]),
+      ),
+      needing(['miner'], take(
+        ...captioned('The miner walled off the creeper. Two blocks.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE, undefined, [], [hero('attack')]), texts: [hiss('sss')], hold: 1 },
+          { actors: creeperScene(C_HOVER, undefined, [WALL_LOW], [hero('attack')]), hold: 1 },
+          { actors: creeperScene(C_HOVER, undefined, [WALL_LOW, WALL_HIGH], [hero('stand')]), texts: [aside('NOPE.', -4)], hold: 2 },
+          { actors: creeperScene(C_ENTER, undefined, [WALL_LOW, WALL_HIGH], [hero('stand')]), texts: [hissUp('...')], hold: 2 },
+          { actors: creeperScene(null, undefined, [WALL_LOW, WALL_HIGH], [hero('stand')]), texts: [aside('PROBLEM SOLVED.', -4)], hold: 3 },
+        ]),
+      )),
+      take(
+        ...captioned('Another creeper. They travel in pairs now.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE), texts: [hiss('sss')], hold: 1 },
+          { actors: creeperScene(C_HOVER, [creeperAt(23), creeperAt(34, { offstage: true })]), texts: [hiss('sss')], hold: 1 },
+          { actors: creeperScene(C_HOVER, [creeperAt(20), creeperAt(28)], [], [hero('stand'), ...sweat]), texts: [hiss('sss'), hissUp('sss')], hold: 2 },
+          { actors: creeperScene(C_ENTER, [creeperAt(20), creeperAt(28)], [], [hero('stand'), ...sweat]), texts: [aside('TWO?!'), hissUp('sss')], hold: 2 },
+          { actors: creeperScene(null, [creeperAt(20), creeperAt(28)], [], [hero('stand', -2), ...sweat]), texts: [aside('TWO?!'), hissUp('sss')], hold: 3 },
+        ]),
+      ),
+    ],
+    snapped: [
+      take(
+        ...captioned('BOOM. The creeper is gone. So is the lawn.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE, [creeper({ swap: FLASHED })]), texts: [hiss('SSSS')], hold: 1 },
+          { actors: creeperScene(C_HOVER), texts: [hiss('sss')], hold: 1 },
+          { actors: creeperScene(C_ENTER, [creeper({ swap: FLASHED })], [], [hero('stand'), ...sweat]), texts: [hiss('SSSS'), aside('UH OH.')], hold: 2 },
+          ...creeperBlows([hero('stand'), ...sweat]),
+        ]),
+      ),
+      take(
+        ...captioned('The creeper blew up. The miner ran. Mostly.', [
+          ...cStart(),
+          { actors: creeperScene(C_POKE, [creeper({ swap: FLASHED })], [], [hero('stand'), ...sweat]), texts: [hiss('SSSS'), aside('RUN!')], hold: 1 },
+          { actors: creeperScene(C_ENTER, undefined, [], [fleeing(-2)]), texts: [hiss('SSSS')], hold: 1 },
+          { actors: creeperScene(null, [creeper({ swap: FLASHED })], [], [fleeing(-3)]), texts: [hiss('SSSS')], hold: 1 },
+          ...creeperBlows([fleeing(-3)], -3),
+        ]),
+      ),
+    ],
+  },
+  // The creeper's rest: a smoking crater where it stood; the miner keeps his distance.
+  rest: loop(
+    { actors: [miner('stand'), ...minerOf(sweat), CRATER, WISP_A], hold: 6 },
+    { actors: [miner('stand'), ...minerOf(sweat), CRATER, WISP_B], texts: [aside('...')], hold: 6 },
+    { actors: [miner('stand'), CRATER, WISP_A], texts: [aside('THAT WAS CLOSE.')], hold: 6 },
+    { actors: [{ ...lookBack, gone: 'miner' }, CRATER, WISP_B], hold: 6 },
+    { actors: [miner('stand'), CRATER], texts: [aside('WELL.')], hold: 6 },
+  ),
+}
+
+const actions: ThemeAction[] = [probeMiner, petWolf, pokeCreeper]
+
 const MINER_POSES = { stand: 'stand', walk: 'walk', attack: 'attack', itemGet: 'itemGet', sleep: 'sleep', lie: 'lie' }
 // Under the quilt the champion is just a miner in a bed: the small lying pose keeps the bed in scale.
 const CHAMPION_POSES = { stand: 'gStand', walk: 'gWalk', attack: 'gAttack', itemGet: 'gItemGet', sleep: 'gSleep', lie: 'lie' }
@@ -1121,6 +1781,7 @@ export const minecraft: Theme = {
   cold,
   overkill,
   events,
+  actions,
   scene: {
     height: 40,
     anchor: { x: 12, y: 18 },

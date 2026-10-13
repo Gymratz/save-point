@@ -5,8 +5,8 @@ import { LIMIT_LEVELS, modelKey, toolKind } from '../lib'
 import type { Level, Run } from '../lib'
 import { mix } from './kit'
 import { Canvas, hex, inkBox, quarter, size } from './pixel'
-import { ACTIVITY_STATES, EVENT_NAMES } from './types'
-import type { ActivityState, Actor, Animation, BarValue, BarWidget, EventName, Frame, HeroPose, HeroTier, MeterValue, Sprite, TextPalette, Theme, WeaponTier } from './types'
+import { ACTION_TIERS, ACTIVITY_STATES, EVENT_NAMES } from './types'
+import type { ActionTier, ActivityState, Actor, Animation, BarValue, BarWidget, EventName, Frame, HeroPose, HeroTier, MeterValue, Sprite, TextPalette, Theme, ThemeAction, WeaponTier } from './types'
 
 // ---------------------------------------------------------------------------
 // Identity and activity
@@ -137,10 +137,23 @@ export function loopFor(theme: Theme, activity: ActivityState, overkill = false,
   return (overkill ? theme.overkill[activity] : undefined) ?? (cold ? theme.cold?.[activity] : undefined) ?? theme.states[activity] ?? theme.states.idle
 }
 
-export type PlayingEvent = { name: EventName; startTick: number; vars: Record<string, string>; /** The take playing (default 0). */ variant?: number }
+/** An action's reaction on screen (or waiting): which action, at what tier; `variant` is the take within the tier. */
+export type PlayingAction = { id: string; tier: ActionTier }
 
-/** A moment waiting to play, queued at tick `at`. */
-export type QueuedEvent = { name: EventName; at: number; vars: Record<string, string> }
+/** The name a reaction plays under: `action:<id>`, never a moment's name. */
+export type ActionName = `action:${string}`
+
+export type PlayingEvent = { name: EventName | ActionName; startTick: number; vars: Record<string, string>; /** The take playing (default 0). */ variant?: number; action?: PlayingAction }
+
+/** A moment waiting to play, queued at tick `at`; a reaction (`action` set) comes with its take picked. */
+export type QueuedEvent = { name: EventName | ActionName; at: number; vars: Record<string, string>; variant?: number; action?: PlayingAction }
+
+/**
+ * How annoyed one action's target is: `heat` as of tick `at` (it cools by one
+ * every `heatDecay` ticks since), `restUntil` the tick a snapped action wakes,
+ * and the takes played last per tier, so the next differs from them.
+ */
+export type ActionHeat = { heat: number; at: number; restUntil: number; recent: Partial<Record<ActionTier, number[]>> }
 
 /** One step of `/hud theme preview`: a state, or one take of an event, for `ticks` more ticks. */
 export type PreviewStep = { kind: 'state' | 'event'; name: string; ticks: number; variant?: number; begun?: boolean }
@@ -165,10 +178,150 @@ export type SceneProgress = {
   preview: PreviewStep[]
   /** The take each moment played last, so the next one differs. */
   picks: Partial<Record<EventName, number>>
+  /** Each action's heat, by id. */
+  actions: Record<string, ActionHeat>
 }
 
 export function sceneStart(): SceneProgress {
-  return { tick: 0, activity: 'idle', since: 0, live: 'idle', started: null, pending: false, dwellUntil: 0, playing: null, queue: [], preview: [], picks: {} }
+  return { tick: 0, activity: 'idle', since: 0, live: 'idle', started: null, pending: false, dwellUntil: 0, playing: null, queue: [], preview: [], picks: {}, actions: {} }
+}
+
+// ---------------------------------------------------------------------------
+// Actions: what a press under the scene does
+// ---------------------------------------------------------------------------
+
+/** The tier `heat` points of annoyance reach: two points per tier, snapped at six. */
+export function tierOf(heat: number): ActionTier {
+  return ACTION_TIERS[Math.min(ACTION_TIERS.length - 1, Math.max(0, Math.floor(heat / 2)))]!
+}
+
+/** An action's heat at `tick`: what it had, less one per `decay` ticks since. */
+export function heatNow(h: ActionHeat | undefined, tick: number, decay: number): number {
+  if (!h) return 0
+  return Math.max(0, h.heat - Math.floor(Math.max(0, tick - h.at) / Math.max(1, decay)))
+}
+
+/** The takes an action plays at a tier: its own, else the nearest tier below with any. */
+export function reactionsFor(action: ThemeAction, tier: ActionTier): Animation[] {
+  for (let k = ACTION_TIERS.indexOf(tier); k >= 0; k--) {
+    const pool = action.reactions[ACTION_TIERS[k]!]
+    if (pool?.length) return pool
+  }
+  return []
+}
+
+export function actionOf(theme: Theme, id: string): ThemeAction | undefined {
+  return theme.actions?.find(a => a.id === id)
+}
+
+/** The animation a playing (or queued) moment draws: the event's, or the action's take. */
+export function playingAnimation(theme: Theme, p: { name: EventName | ActionName; variant?: number; action?: PlayingAction }): Animation | undefined {
+  if (p.action) {
+    const action = actionOf(theme, p.action.id)
+    return action ? reactionsFor(action, p.action.tier)[p.variant ?? 0] : undefined
+  }
+  return theme.events[p.name as EventName]
+}
+
+/** How many takes a tier remembers, so a pick is never among the last few: up to three, always leaving one. */
+export const RECENT_TAKES = 3
+
+/**
+ * A take from `count`, seeded by `seed`, never one of `recent` while any other
+ * is left (a pool of one always plays it).
+ */
+export function pickFresh(count: number, seed: number, recent: number[], allowed?: number[]): number {
+  const all = allowed ?? Array.from({ length: count }, (_, k) => k)
+  if (all.length <= 1) return all[0] ?? 0
+  const open = all.filter(k => !recent.includes(k))
+  const from = open.length ? open : all
+  return from[Math.floor(noise(seed, 11) * from.length)]!
+}
+
+export type PressOptions = {
+  /** Ticks for one point of heat to cool. */
+  heatDecay: number
+  /** Ticks a snapped action rests. */
+  rest: number
+}
+
+/**
+ * A press on action `id` at `p.tick`: its heat goes up one (after cooling), the
+ * tier's pool gives a fresh take, and the reaction goes to the front of the
+ * queue, where the step starts it at once. While a reaction plays, the newest
+ * press is the one that waits (never a backlog), so fast presses escalate in
+ * two reactions rather than replay in five. A resting action ignores the press,
+ * as does one whose target another action's rest has taken away (`needs`); a
+ * take that needs something gone is not picked (the tier below plays instead).
+ */
+export function pressAction(theme: Theme, p: SceneProgress, id: string, o: PressOptions): SceneProgress {
+  const action = actionOf(theme, id)
+  if (!action) return p
+  const tick = p.tick
+  const prev = p.actions[id]
+  if (actionBlocked(theme, p, action)) return p
+  const heat = heatNow(prev, tick, o.heatDecay) + 1
+  const gone = goneNow(theme, p)
+  const choice = takeChoices(action, tierOf(heat), gone)
+  if (!choice) return p
+  const { tier, indices } = choice
+  const pool = action.reactions[tier]
+  const recent = prev?.recent[tier] ?? []
+  const variant = pickFresh(pool.length, tick, recent, indices)
+  const remembered = { ...prev?.recent, [tier]: [...recent, variant].slice(-Math.min(RECENT_TAKES, pool.length - 1)) }
+  const next: ActionHeat = tier === 'snapped' ? { heat: 0, at: tick, restUntil: tick + o.rest, recent: remembered } : { heat, at: tick, restUntil: 0, recent: remembered }
+  const entry: QueuedEvent = { name: `action:${id}`, at: tick, vars: {}, variant, action: { id, tier } }
+  return { ...p, queue: [entry, ...p.queue.filter(q => !q.action)], actions: { ...p.actions, [id]: next } }
+}
+
+/** What the resting actions have taken away: the union of their `gone` names. */
+export function goneNow(theme: Theme, p: SceneProgress): string[] {
+  const out: string[] = []
+  for (const a of theme.actions ?? []) {
+    const h = p.actions[a.id]
+    if (h && h.restUntil > p.tick) for (const g of a.gone ?? []) if (!out.includes(g)) out.push(g)
+  }
+  return out
+}
+
+/** The takes an action may play at `tier` with `gone` away: its own tier's, else the nearest tier below with any (indices into that tier's pool). */
+export function takeChoices(action: ThemeAction, tier: ActionTier, gone: string[]): { tier: ActionTier; indices: number[] } | null {
+  for (let k = ACTION_TIERS.indexOf(tier); k >= 0; k--) {
+    const t = ACTION_TIERS[k]!
+    const indices = (action.reactions[t] ?? []).flatMap((take, i) => (take.needs?.some(n => gone.includes(n)) ? [] : [i]))
+    if (indices.length) return { tier: t, indices }
+  }
+  return null
+}
+
+/** The resting action whose `rest` loop the scene shows (the first with one), and the tick its rest began. */
+export function restingAction(theme: Theme, p: SceneProgress): { id: string; since: number } | null {
+  for (const a of theme.actions ?? []) {
+    const h = p.actions[a.id]
+    if (a.rest && h && h.restUntil > p.tick) return { id: a.id, since: h.at }
+  }
+  return null
+}
+
+export type ActionButton = { id: string; label: string; resting: boolean }
+
+/** Whether an action takes no press now: resting itself, or its target away under another action's rest. */
+export function actionBlocked(theme: Theme, p: SceneProgress, action: ThemeAction): boolean {
+  if ((p.actions[action.id]?.restUntil ?? 0) > p.tick) return true
+  const gone = goneNow(theme, p)
+  return (action.needs ?? []).some(n => gone.includes(n))
+}
+
+/**
+ * The row of buttons under the scene: each action's label, or its rest label
+ * while it rests; `resting` (dim, inert) under its own label while its target
+ * is away under another action's rest.
+ */
+export function actionButtons(theme: Theme, p: SceneProgress): ActionButton[] {
+  return (theme.actions ?? []).map(a => {
+    const own = (p.actions[a.id]?.restUntil ?? 0) > p.tick
+    return { id: a.id, label: own ? a.restLabel : a.label, resting: own || actionBlocked(theme, p, a) }
+  })
 }
 
 export type StepOptions = {
@@ -234,7 +387,11 @@ export function stepScene(theme: Theme, p: SceneProgress, o: StepOptions): Scene
   }
 
   const picks = { ...p.picks }
-  if (playing && tick - playing.startTick >= duration(theme.events[playing.name], playing.variant)) playing = null
+  const loopShown = !playing
+  if (playing) {
+    const anim = playingAnimation(theme, playing)
+    if (!anim || tick - playing.startTick >= duration(anim, playing.action ? 0 : playing.variant)) playing = null
+  }
   // The same loop already on screen (or about to be) carries on; another tool takes over.
   if (p.started && !(activity === p.started && (pending || tick < dwellUntil))) {
     activity = p.started
@@ -243,11 +400,24 @@ export function stepScene(theme: Theme, p: SceneProgress, o: StepOptions): Scene
   if (!playing) {
     if (pending) {
       const anim = loopFor(theme, activity, o.overkill, o.cold)
-      since = tick
-      dwellUntil = tick + Math.min(o.maxDwell, duration(anim, loopAt(anim, tick, 0).variant))
+      if (loopShown && activity === p.activity) {
+        // The loop is on screen already (a read after a read): it keeps its clock and finishes the take it is in.
+        const at = loopAt(anim, since, tick - since)
+        dwellUntil = tick + Math.min(o.maxDwell, Math.max(1, duration(anim, at.variant) - at.t))
+      } else {
+        since = tick
+        dwellUntil = tick + Math.min(o.maxDwell, duration(anim, loopAt(anim, tick, 0).variant))
+      }
       pending = false
     }
-    if (tick >= dwellUntil) {
+    // A reaction starts at once, dwell or not: the person pressed for it.
+    const reaction = queue[0]?.action ? queue[0] : undefined
+    if (reaction) {
+      playing = { ...reaction, startTick: tick }
+      // The session's moments keep their age while the reaction plays: none is dropped for it.
+      const held = duration(playingAnimation(theme, playing) ?? { frames: [], loop: false })
+      queue = queue.slice(1).map(q => ({ ...q, at: q.at + held }))
+    } else if (tick >= dwellUntil) {
       if (activity !== p.live) {
         activity = p.live
         since = tick
@@ -255,9 +425,10 @@ export function stepScene(theme: Theme, p: SceneProgress, o: StepOptions): Scene
       queue = queue.filter(q => tick - q.at <= o.maxAge)
       const first = queue[0]
       if (first) {
-        const variant = pickVariant(takes(theme.events[first.name]).length, tick, picks[first.name])
-        picks[first.name] = variant
-        playing = { name: first.name, startTick: tick, vars: first.vars, variant }
+        const name = first.name as EventName
+        const variant = pickVariant(takes(theme.events[name]).length, tick, picks[name])
+        picks[name] = variant
+        playing = { name, startTick: tick, vars: first.vars, variant }
         queue = queue.slice(1)
       }
     }
@@ -284,12 +455,25 @@ export type SceneState = {
   nextWarmUsd: number | null
   nextColdUsd: number | null
   event: PlayingEvent | null
+  /** An action resting with a `rest` loop (see `restingAction`): the loop replaces the scene. */
+  rest?: { id: string; since: number } | null
+  /** What the resting actions have taken away (see `goneNow`): actors and lines marked with these are not drawn. */
+  gone?: string[]
 }
 
-/** The frame on screen: the playing event's, else the activity loop's. */
+/** The frame on screen: a reaction's, else a resting action's loop, else the playing moment's, else the activity loop's. */
 export function currentFrame(theme: Theme, s: SceneState): Frame {
+  if (s.event?.action) {
+    const anim = playingAnimation(theme, s.event)
+    if (anim) return frameAt(anim, s.tick - s.event.startTick, 0)
+  }
+  const rest = s.rest ? actionOf(theme, s.rest.id)?.rest : undefined
+  if (rest && s.rest) {
+    const at = loopAt(rest, s.rest.since, s.tick - s.rest.since)
+    return frameAt(rest, at.t, at.variant)
+  }
   if (s.event) {
-    const anim = theme.events[s.event.name]
+    const anim = playingAnimation(theme, s.event)
     if (anim) return frameAt(anim, s.tick - s.event.startTick, s.event.variant ?? 0)
   }
   const anim = loopFor(theme, s.activity, s.overkill, s.cacheCold)
@@ -298,13 +482,26 @@ export function currentFrame(theme: Theme, s: SceneState): Frame {
   return frameAt(anim, at.t, at.variant)
 }
 
-/** Every animation of a theme with the scene state that shows it, and a name for reports. */
+/**
+ * Every animation of a theme with the scene state that shows it, and a name for
+ * reports. A reaction comes with `state.event` set to play that take (`actions.<id>.<tier>#<k>`).
+ */
 export function animationsOf(theme: Theme): { key: string; anim: Animation; state: Partial<SceneState>; event?: EventName }[] {
   return [
     ...ACTIVITY_STATES.map(a => ({ key: `states.${a}`, anim: theme.states[a], state: { activity: a } })),
     ...ACTIVITY_STATES.flatMap(a => (theme.overkill[a] ? [{ key: `overkill.${a}`, anim: theme.overkill[a]!, state: { activity: a, overkill: true } }] : [])),
     ...ACTIVITY_STATES.flatMap(a => (theme.cold?.[a] ? [{ key: `cold.${a}`, anim: theme.cold[a]!, state: { activity: a, cacheCold: true } }] : [])),
     ...EVENT_NAMES.map(e => ({ key: `events.${e}`, anim: theme.events[e], state: {}, event: e })),
+    ...(theme.actions ?? []).flatMap(a => [
+      ...ACTION_TIERS.flatMap(tier =>
+        (a.reactions[tier] ?? []).map((anim, k) => ({
+          key: `actions.${a.id}.${tier}${k ? `#${k}` : ''}`,
+          anim,
+          state: { activity: 'idle' as const, event: { name: `action:${a.id}` as const, startTick: 0, vars: {}, variant: k, action: { id: a.id, tier } } },
+        })),
+      ),
+      ...(a.rest ? [{ key: `actions.${a.id}.rest`, anim: a.rest, state: { activity: 'idle' as const, rest: { id: a.id, since: 0 } } }] : []),
+    ]),
   ]
 }
 
@@ -496,6 +693,7 @@ function placeFrame(theme: Theme, s: SceneState, frame: Frame, extra: number): P
   for (const actor of frame.actors) {
     if (actor.tiers && !actor.tiers.includes(s.hero)) continue
     if (!inPercent(s.percent, actor.minPercent, actor.maxPercent)) continue
+    if (actor.gone && s.gone?.includes(actor.gone)) continue
     const x = spec.anchor.x + actor.x
     const y = spec.anchor.y + extra + actor.y
     const lifted = form && actor.y < 0 && !actor.fixed ? y - form.lift : y
@@ -551,7 +749,7 @@ function drawHero(cv: Canvas, theme: Theme, tier: HeroTier, pose: HeroPose, x: n
 function placeTexts(theme: Theme, s: SceneState, frame: Frame, extra: number): { text: string; col: number; row: number; color: string; bg?: string }[] {
   const spec = theme.scene!
   const form = spec.heroForms?.[s.hero]
-  return (frame.texts ?? []).map(t => {
+  return (frame.texts ?? []).filter(t => !(t.gone && s.gone?.includes(t.gone))).map(t => {
     const lift = form && t.lift && t.y < 0 ? form.lift : 0
     return { text: t.text, col: spec.anchor.x + t.x, row: Math.floor((spec.anchor.y + extra + t.y - lift) / 2), color: t.color, bg: t.bg }
   })
@@ -906,7 +1104,12 @@ const MIN_METER_ROWS = 4
 export function sceneMinRows(theme: Theme, tabRows: number): number {
   const spec = theme.scene
   if (!spec) return Infinity
-  return tabRows + (spec.bar ? BAR_ROWS : 0) + sceneDesignRows(theme) + LOG_ROWS + MIN_METER_ROWS
+  return tabRows + (spec.bar ? BAR_ROWS : 0) + sceneDesignRows(theme) + actionRows(theme) + LOG_ROWS + MIN_METER_ROWS
+}
+
+/** The row of action buttons under the scene: one when the theme has actions. */
+export function actionRows(theme: Theme): number {
+  return theme.scene && theme.actions?.length ? 1 : 0
 }
 
 /** The Quest tab's rows: `scene` 0 when it hides; `bar` rows of widgets (1 or 2); `log` rows. */
@@ -925,7 +1128,7 @@ export function questLayout(theme: Theme, room: { rows: number; tabRows: number;
   if (!spec || room.rows < sceneMinRows(theme, room.tabRows)) return { scene: 0, bar: 1, log: LOG_ROWS }
   const design = sceneDesignRows(theme)
   const unit = spec.bar ? BAR_ROWS : 0
-  const left = room.rows - room.tabRows - room.meterRows - LOG_ROWS
+  const left = room.rows - room.tabRows - room.meterRows - actionRows(theme) - LOG_ROWS
   const bar = room.barWanted >= 2 && left >= 2 * unit + design ? 2 : 1
   const scene = Math.max(design, Math.min(sceneMaxRows(theme), left - bar * unit))
   return { scene, bar, log: LOG_ROWS + Math.max(0, left - bar * unit - scene) }
